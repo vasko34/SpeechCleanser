@@ -19,13 +19,11 @@ class VariationCell: UITableViewCell {
         contentView.addSubview(titleLabel)
         
         NSLayoutConstraint.activate([
-            titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -10),
-            titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            titleLabel.trailingAnchor.constraint(greaterThanOrEqualTo: contentView.trailingAnchor, constant: -16),
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10)
+            titleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
         ])
-        
-        accessoryType = .disclosureIndicator
     }
     
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

@@ -11,6 +11,7 @@ class KeywordNameEntryViewController: UIViewController {
     private let textField = UITextField()
     private let descriptionLabel = UILabel()
     
+    private var keyboardActivationWorkItem: DispatchWorkItem?
     private var backgroundObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
     private var didActivateKeyboard = false
@@ -32,6 +33,8 @@ class KeywordNameEntryViewController: UIViewController {
         textField.placeholder = "Enter keyword name"
         textField.borderStyle = .roundedRect
         textField.autocapitalizationType = .none
+        textField.autocorrectionType = .no
+        textField.spellCheckingType = .no
         textField.translatesAutoresizingMaskIntoConstraints = false
         descriptionLabel.translatesAutoresizingMaskIntoConstraints = false
         
@@ -50,11 +53,11 @@ class KeywordNameEntryViewController: UIViewController {
         ])
         
         backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.handleWillResignActive()
+            self?.deactivateKeyboard(reason: "willResignActive")
         }
         
         foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.activateKeyboardIfNeeded()
+            self?.scheduleKeyboardActivation(reason: "didBecomeActive")
         }
         
         print("[KeywordNameEntryViewController] viewDidLoad: Ready for input")
@@ -62,16 +65,12 @@ class KeywordNameEntryViewController: UIViewController {
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        activateKeyboardIfNeeded()
+        scheduleKeyboardActivation(reason: "viewDidAppear")
     }
     
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if textField.isFirstResponder {
-            textField.resignFirstResponder()
-            print("[KeywordNameEntryViewController] viewWillDisappear: Resigned text field")
-        }
-        didActivateKeyboard = false
+        deactivateKeyboard(reason: "viewWillDisappear")
     }
     
     deinit {
@@ -82,39 +81,48 @@ class KeywordNameEntryViewController: UIViewController {
         if let observer = foregroundObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-    }
-    
-    private func activateKeyboardIfNeeded() {
-        guard !didActivateKeyboard, view.window != nil else { return }
         
-        if !textField.isFirstResponder {
-            didActivateKeyboard = true
-            textField.becomeFirstResponder()
-            print("[KeywordNameEntryViewController] activateKeyboardIfNeeded: Activated text field")
-        }
+        keyboardActivationWorkItem?.cancel()
     }
     
-    @objc private func handleWillResignActive() {
+    private func scheduleKeyboardActivation(reason: String) {
+        guard view.window != nil else { return }
+        if didActivateKeyboard, textField.isFirstResponder { return }
+        
+        keyboardActivationWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard self.view.window != nil else { return }
+            guard !self.textField.isFirstResponder else { return }
+            
+            self.didActivateKeyboard = true
+            if self.textField.becomeFirstResponder() {
+                print("[KeywordNameEntryViewController] scheduleKeyboardActivation: Activated text field via \(reason)")
+            }
+        }
+        
+        keyboardActivationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+    }
+    
+    private func deactivateKeyboard(reason: String) {
+        keyboardActivationWorkItem?.cancel()
+        keyboardActivationWorkItem = nil
         if textField.isFirstResponder {
             textField.resignFirstResponder()
-            print("[KeywordNameEntryViewController] handleWillResignActive: Resigned text field")
+            print("[KeywordNameEntryViewController] deactivateKeyboard: Resigned text field via \(reason)")
         }
         didActivateKeyboard = false
     }
     
     @objc private func cancelTapped() {
-        if textField.isFirstResponder {
-            textField.resignFirstResponder()
-        }
-        
+        deactivateKeyboard(reason: "cancelTapped")
         print("[KeywordNameEntryViewController] cancelTapped: Dismissing without saving")
         dismiss(animated: true)
     }
     
     @objc private func saveTapped() {
-        if textField.isFirstResponder {
-            textField.resignFirstResponder()
-        }
+        deactivateKeyboard(reason: "saveTapped")
         
         let name = textField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !name.isEmpty else {

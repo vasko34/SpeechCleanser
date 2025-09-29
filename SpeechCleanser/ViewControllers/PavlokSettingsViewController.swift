@@ -40,11 +40,25 @@ class PavlokSettingsViewController: UIViewController {
         apiKeyField.placeholder = "API Token"
         apiKeyField.borderStyle = .roundedRect
         apiKeyField.autocapitalizationType = .none
+        apiKeyField.autocorrectionType = .no
+        apiKeyField.spellCheckingType = .no
+        apiKeyField.smartQuotesType = .no
+        apiKeyField.smartDashesType = .no
+        apiKeyField.returnKeyType = .next
+        apiKeyField.textContentType = .none
+        apiKeyField.delegate = self
         apiKeyField.text = initialAPIKey
         
         intensityField.placeholder = "Intensity"
         intensityField.borderStyle = .roundedRect
         intensityField.keyboardType = .numberPad
+        intensityField.autocorrectionType = .no
+        intensityField.spellCheckingType = .no
+        intensityField.smartDashesType = .no
+        intensityField.smartQuotesType = .no
+        intensityField.returnKeyType = .done
+        intensityField.textContentType = .none
+        intensityField.delegate = self
         intensityField.text = String(initialIntensity)
         
         [infoLabel, apiKeyField, intensityField].forEach {
@@ -69,8 +83,7 @@ class PavlokSettingsViewController: UIViewController {
         ])
         
         backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.view.endEditing(true)
-            print("[PavlokSettingsViewController] viewDidLoad: Ended editing")
+            self?.dismissKeyboard(reason: "willResignActive")
         }
         
         print("[PavlokSettingsViewController] viewDidLoad: Loaded with API key present=\(initialAPIKey?.isEmpty == false)")
@@ -82,14 +95,23 @@ class PavlokSettingsViewController: UIViewController {
         }
     }
     
+    private func dismissKeyboard(reason: String) {
+        guard view.window != nil else { return }
+        
+        if apiKeyField.isFirstResponder || intensityField.isFirstResponder {
+            view.endEditing(true)
+            print("[PavlokSettingsViewController] dismissKeyboard: Resigned via \(reason)")
+        }
+    }
+    
     @objc private func cancelTapped() {
-        view.endEditing(true)
+        dismissKeyboard(reason: "cancelTapped")
         print("[PavlokSettingsViewController] cancelTapped: Dismissing without saving")
         dismiss(animated: true)
     }
     
     @objc private func saveTapped() {
-        view.endEditing(true)
+        dismissKeyboard(reason: "saveTapped")
         
         let trimmedToken = apiKeyField.text?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawIntensity = intensityField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -103,5 +125,18 @@ class PavlokSettingsViewController: UIViewController {
         onSave?(trimmedToken, clampedIntensity)
         print("[PavlokSettingsViewController] saveTapped: Saved settings")
         dismiss(animated: true)
+    }
+}
+
+// MARK: - UITextFieldDelegate
+
+extension PavlokSettingsViewController: UITextFieldDelegate {
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        if textField === apiKeyField {
+            intensityField.becomeFirstResponder()
+        } else {
+            textField.resignFirstResponder()
+        }
+        return true
     }
 }

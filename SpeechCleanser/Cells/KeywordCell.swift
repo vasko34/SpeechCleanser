@@ -19,17 +19,16 @@ class KeywordCell: UITableViewCell {
         
         accessoryView = toggle
         nameLabel.font = .systemFont(ofSize: 17, weight: .regular)
-        contentView.addSubview(nameLabel)
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(nameLabel)
         
         NSLayoutConstraint.activate([
-            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            nameLabel.trailingAnchor.constraint(greaterThanOrEqualTo: contentView.trailingAnchor, constant: -16),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            nameLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
+            nameLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
         ])
         
-        nameLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        nameLabel.setContentHuggingPriority(.required, for: .vertical)
         toggle.addTarget(self, action: #selector(switched), for: .valueChanged)
         selectionStyle = .default
     }

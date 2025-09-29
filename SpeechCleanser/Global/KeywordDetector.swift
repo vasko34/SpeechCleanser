@@ -33,13 +33,18 @@ final class KeywordDetector {
         let aggregatedSimilarity: Float
     }
     
-    private let searchPadding: TimeInterval = 0.35
-    private let primaryThreshold: Float = 0.72
-    private let aggregateThreshold: Float = 0.60
-    private let similarityMargin: Float = 0.06
-    private let silenceThreshold: Float = 0.012
-    private let windowStrideDivisor = 5
     private let queue = DispatchQueue(label: "KeywordDetector.queue")
+    private let searchPadding: TimeInterval = 0.35
+    private let primaryThreshold: Float = 0.58
+    private let aggregateThreshold: Float = 0.50
+    private let similarityMargin: Float = 0.05
+    private let silenceThreshold: Float = 0.006
+    private let noiseLearningRate: Float = 0.04
+    private let signalBoost: Float = 2.3
+    private let minActiveLevel: Float = 0.015
+    private let maxNoiseFloor: Float = 0.05
+    private let keywordRepeatInterval: TimeInterval = 6.0
+    private let windowStrideDivisor = 6
     
     private var keywords: [CachedKeyword] = []
     private var lastDetection: Date?
@@ -47,6 +52,8 @@ final class KeywordDetector {
     private var sampleRate: Double = 44_100
     private var circularBuffer: [Float] = []
     private var maxSampleCount: Int = 0
+    private var noiseFloor: Float = 0
+    private var lastKeywordID: UUID?
     
     var onDetection: ((UUID, String) -> Void)?
     
@@ -57,9 +64,32 @@ final class KeywordDetector {
         }
     }
     
-    private func canTriggerDetection() -> Bool {
-        guard let last = lastDetection else { return true }
-        return Date().timeIntervalSince(last) >= debounceInterval
+    private func canTriggerDetection(for keywordID: UUID) -> Bool {
+        if let last = lastDetection, Date().timeIntervalSince(last) < debounceInterval {
+            return false
+        }
+        
+        if let previousID = lastKeywordID,
+           previousID == keywordID,
+           let last = lastDetection,
+           Date().timeIntervalSince(last) < keywordRepeatInterval {
+            return false
+        }
+        
+        return true
+    }
+    
+    private func updateNoise(with level: Float) {
+        let clamped = max(0, min(level, 1))
+        
+        if noiseFloor == 0 {
+            noiseFloor = clamped
+            return
+        }
+        
+        let alpha: Float = clamped > noiseFloor ? noiseLearningRate * 0.5 : noiseLearningRate
+        let updated = (1 - alpha) * noiseFloor + alpha * clamped
+        noiseFloor = min(max(updated, 0.0005), maxNoiseFloor)
     }
     
     private func normalize(_ values: [Float]) -> [Float] {
@@ -145,6 +175,9 @@ final class KeywordDetector {
             if self.maxSampleCount <= 0 { self.maxSampleCount = 1_024 }
             self.circularBuffer.removeAll(keepingCapacity: false)
             
+            self.noiseFloor = 0
+            self.lastKeywordID = nil
+            
             let variationTotal = self.keywords.reduce(0) { $0 + $1.variations.count }
             print("[KeywordDetector] configure: Cached \(variationTotal) variations at sampleRate \(sampleRate)")
         }
@@ -154,9 +187,13 @@ final class KeywordDetector {
         queue.async { [weak self] in
             guard let self = self else { return }
             guard !self.keywords.isEmpty else { return }
-            guard level >= self.silenceThreshold else { return }
             
+            let clampedLevel = max(0, min(level, 1))
+            self.updateNoise(with: clampedLevel)
+            let dynamicThreshold = max(self.minActiveLevel, max(self.silenceThreshold, self.noiseFloor * self.signalBoost))
             self.appendSamples(samples)
+            guard clampedLevel >= dynamicThreshold else { return }
+            
             let availableCount = self.circularBuffer.count
             let searchCount = min(availableCount, self.maxSampleCount)
             guard searchCount > 0 else { return }
@@ -222,9 +259,11 @@ final class KeywordDetector {
             guard candidate.variationSimilarity >= self.primaryThreshold else { return }
             guard candidate.aggregatedSimilarity >= self.aggregateThreshold else { return }
             guard bestScore - runnerUpScore >= self.similarityMargin else { return }
-            guard self.canTriggerDetection() else { return }
+            guard self.canTriggerDetection(for: candidate.keyword.keywordID) else { return }
             
+            self.noiseFloor = min(self.noiseFloor, clampedLevel * 0.6)
             self.lastDetection = Date()
+            self.lastKeywordID = candidate.keyword.keywordID
             DispatchQueue.main.async {
                 self.onDetection?(candidate.keyword.keywordID, candidate.keyword.keywordName)
             }

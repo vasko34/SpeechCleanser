@@ -130,10 +130,25 @@ class VariationsTableViewController: UITableViewController {
         recordURL = nil
         recordAlert?.dismiss(animated: true)
         
-        do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        } catch {
-            print("[VariationsTableViewController][ERROR] finishRecording: Failed to deactivate recording session with error: \(error.localizedDescription)")
+        let shouldResume = resumeListeningAfterRecording
+        resumeListeningAfterRecording = false
+        
+        let session = AVAudioSession.sharedInstance()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try session.setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                DispatchQueue.main.async {
+                    print("[VariationsTableViewController][ERROR] finishRecording: Failed to deactivate recording session with error: \(error.localizedDescription)")
+                }
+            }
+            
+            if shouldResume {
+                AudioManager.shared.start()
+                DispatchQueue.main.async {
+                    print("[VariationsTableViewController] finishRecording: Resumed background listening")
+                }
+            }
         }
         
         guard let url = fileURL else { return }
@@ -165,12 +180,6 @@ class VariationsTableViewController: UITableViewController {
                 print("[VariationsTableViewController] finishRecording: Saved new variation for keyword \(kword.name)")
             }
             print("[VariationsTableViewController] finishRecording: Persisted variation for keyword \(kword.name)")
-        }
-        
-        if resumeListeningAfterRecording {
-            resumeListeningAfterRecording = false
-            AudioManager.shared.start()
-            print("[VariationsTableViewController] finishRecording: Resumed background listening")
         }
     }
     

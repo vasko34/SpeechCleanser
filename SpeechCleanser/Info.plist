@@ -21,9 +21,13 @@
 			</array>
 		</dict>
 	</dict>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-	</array>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>The app records audio to detect custom keywords and trigger Pavlok alerts.</string>
+    <key>NSUserNotificationUsageDescription</key>
+    <string>Notifications alert you when a keyword triggers a Pavlok zap.</string>
 </dict>
 </plist>

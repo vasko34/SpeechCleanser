@@ -7,12 +7,48 @@
 
 import Foundation
 
+enum CodingKeys: String, CodingKey {
+    case id
+    case filePath
+    case duration
+    case fingerprint
+}
+
 struct Variation: Codable, Equatable, Identifiable {
     let id: UUID
     let filePath: String
-    
-    init(id: UUID = UUID(), filePath: String, duration: TimeInterval) {
+    let duration: TimeInterval
+    let fingerprint: [Float]
+
+    init(id: UUID = UUID(), filePath: String, duration: TimeInterval, fingerprint: [Float]) {
         self.id = id
         self.filePath = filePath
+        self.duration = duration
+        self.fingerprint = fingerprint
+    }
+    
+    init(from decoder: Decoder) {
+        do {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+            filePath = try container.decode(String.self, forKey: .filePath)
+            duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
+            fingerprint = try container.decodeIfPresent([Float].self, forKey: .fingerprint) ?? []
+        } catch {
+            print("Decoder failed with error: \(error.localizedDescription)")
+        }
+    }
+    
+    func encode(to encoder: Encoder) {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        
+        do {
+            try container.encode(id, forKey: .id)
+            try container.encode(filePath, forKey: .filePath)
+            try container.encode(duration, forKey: .duration)
+            try container.encode(fingerprint, forKey: .fingerprint)
+        } catch {
+            print("Encoder failed with error: \(error.localizedDescription)")
+        }
     }
 }

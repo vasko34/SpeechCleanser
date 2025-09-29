@@ -41,6 +41,7 @@ class KeywordsTableViewController: UITableViewController {
             list.append(Keyword(name: name, isEnabled: true, variations: []))
             KeywordStore.shared.save(list)
             self.keywords = list
+            AudioManager.shared.reloadKeywords()
             self.tableView.reloadData()
         }))
         
@@ -63,6 +64,7 @@ class KeywordsTableViewController: UITableViewController {
             list[indexPath.row].isEnabled = isOn
             self.keywords = list
             KeywordStore.shared.save(list)
+            AudioManager.shared.reloadKeywords()
         }
         
         return cell
@@ -72,5 +74,26 @@ class KeywordsTableViewController: UITableViewController {
         let keyword = keywords[indexPath.row]
         let viewController = VariationsTableViewController(keywordID: keyword.id)
         navigationController?.pushViewController(viewController, animated: true)
+    }
+    
+    override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        guard editingStyle == .delete else { return }
+        
+        var list = KeywordStore.shared.load()
+        let keyword = list.remove(at: indexPath.row)
+        KeywordStore.shared.save(list)
+        keywords = list
+        tableView.deleteRows(at: [indexPath], with: .automatic)
+        AudioManager.shared.reloadKeywords()
+        
+        for variation in keyword.variations {
+            let fileURL = KeywordStore.fileURL(for: variation.filePath)
+            
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+            } catch {
+                print("FileManager failed to remove item with error: \(error.localizedDescription)")
+            }
+        }
     }
 }

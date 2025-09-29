@@ -16,6 +16,7 @@ class VariationsTableViewController: UITableViewController {
     private var recordAlert: UIAlertController?
     private var recordURL: URL?
     private var keyword: Keyword?
+    private var resumeListeningAfterRecording = false
     
     init(keywordID: UUID) {
         self.keywordID = keywordID
@@ -50,6 +51,11 @@ class VariationsTableViewController: UITableViewController {
     }
     
     private func beginRecordingFlow() {
+        resumeListeningAfterRecording = AudioManager.shared.running
+        if resumeListeningAfterRecording {
+            AudioManager.shared.stop()
+        }
+        
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .default, options: [])
@@ -93,6 +99,7 @@ class VariationsTableViewController: UITableViewController {
         recorder?.stop()
         let start = recordStart ?? Date()
         let duration = Date().timeIntervalSince(start)
+        let actualDuration = recorder?.currentTime ?? duration
         let fileURL = recordURL
         
         recorder = nil
@@ -100,17 +107,38 @@ class VariationsTableViewController: UITableViewController {
         recordURL = nil
         recordAlert?.dismiss(animated: true)
         
-        var list = KeywordStore.shared.load()
-        guard let url = fileURL else { return }
-        guard let idx = list.firstIndex(where: { $0.id == keywordID }) else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Failed to deactivate recording session:", error)
+        }
         
-        var kword = list[idx]
-        let relativePath = url.lastPathComponent
-        kword.variations.append(Variation(filePath: relativePath, duration: duration))
-        list[idx] = kword
-        KeywordStore.shared.save(list)
-        self.keyword = kword
-        self.tableView.reloadData()
+        guard let url = fileURL else { return }
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var list = KeywordStore.shared.load()
+            guard let self = self else { return }
+            guard let idx = list.firstIndex(where: { $0.id == self.keywordID }) else { return }
+            
+            let analysis = AudioFingerprint.fromFile(url: url)
+            var kword = list[idx]
+            let relativePath = url.lastPathComponent
+            let variation = Variation(filePath: relativePath, duration: actualDuration, fingerprint: analysis.fingerprint)
+            kword.variations.append(variation)
+            list[idx] = kword
+            KeywordStore.shared.save(list)
+            
+            DispatchQueue.main.async {
+                self.keyword = kword
+                self.tableView.reloadData()
+                AudioManager.shared.reloadKeywords()
+            }
+        }
+        
+        if resumeListeningAfterRecording {
+            resumeListeningAfterRecording = false
+            AudioManager.shared.start()
+        }
     }
     
     private func play(url: URL) {
@@ -159,5 +187,30 @@ class VariationsTableViewController: UITableViewController {
         
         let url = KeywordStore.fileURL(for: varItem.filePath)
         play(url: url)
+    }
+    
+    override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        guard editingStyle == .delete else { return }
+        guard var keyword = keyword else { return }
+        
+        let variation = keyword.variations[indexPath.row]
+        let fileURL = KeywordStore.fileURL(for: variation.filePath)
+        
+        do {
+            try FileManager.default.removeItem(at: fileURL)
+        } catch {
+            print("FileManager failed to remove item with error: \(error.localizedDescription)")
+        }
+        
+        keyword.variations.remove(at: indexPath.row)
+        var list = KeywordStore.shared.load()
+        if let index = list.firstIndex(where: { $0.id == keywordID }) {
+            list[index] = keyword
+            KeywordStore.shared.save(list)
+        }
+        
+        self.keyword = keyword
+        tableView.deleteRows(at: [indexPath], with: .automatic)
+        AudioManager.shared.reloadKeywords()
     }
 }

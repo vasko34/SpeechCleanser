@@ -6,19 +6,16 @@
 //
 
 import Foundation
-import Accelerate
 
 final class KeywordDetector {
     private struct CachedVariation {
         let sampleCount: Int
-        let duration: TimeInterval
         let fingerprint: [Float]
     }
     
     private struct CachedKeyword {
-        let keywordID: UUID
-        let keywordName: String
-        let representative: [Float]
+        let id: UUID
+        let name: String
         let variations: [CachedVariation]
     }
     
@@ -27,33 +24,26 @@ final class KeywordDetector {
         let length: Int
     }
     
-    private struct DetectionCandidate {
-        let keyword: CachedKeyword
-        let variationSimilarity: Float
-        let aggregatedSimilarity: Float
-    }
-    
     private let queue = DispatchQueue(label: "KeywordDetector.queue")
-    private let searchPadding: TimeInterval = 0.35
-    private let primaryThreshold: Float = 0.58
-    private let aggregateThreshold: Float = 0.50
-    private let similarityMargin: Float = 0.05
-    private let silenceThreshold: Float = 0.006
+    private let similarityThreshold: Float = 0.74
+    private let marginThreshold: Float = 0.08
+    private let minSignalLevel: Float = 0.015
+    private let noiseBoost: Float = 2.4
     private let noiseLearningRate: Float = 0.04
-    private let signalBoost: Float = 2.3
-    private let minActiveLevel: Float = 0.015
     private let maxNoiseFloor: Float = 0.05
-    private let keywordRepeatInterval: TimeInterval = 6.0
-    private let windowStrideDivisor = 6
+    private let globalCooldown: TimeInterval = 1.6
+    private let keywordCooldown: TimeInterval = 4.0
+    private let windowPadding: TimeInterval = 0.45
+    private let strideDivisor = 6
+    private let retentionMultiplier = 4
     
     private var keywords: [CachedKeyword] = []
-    private var lastDetection: Date?
-    private var debounceInterval: TimeInterval = 3.0
     private var sampleRate: Double = 44_100
     private var circularBuffer: [Float] = []
     private var maxSampleCount: Int = 0
     private var noiseFloor: Float = 0
-    private var lastKeywordID: UUID?
+    private var lastGlobalDetection: Date?
+    private var lastKeywordDetections: [UUID: Date] = [:]
     
     var onDetection: ((UUID, String) -> Void)?
     
@@ -64,21 +54,6 @@ final class KeywordDetector {
         }
     }
     
-    private func canTriggerDetection(for keywordID: UUID) -> Bool {
-        if let last = lastDetection, Date().timeIntervalSince(last) < debounceInterval {
-            return false
-        }
-        
-        if let previousID = lastKeywordID,
-           previousID == keywordID,
-           let last = lastDetection,
-           Date().timeIntervalSince(last) < keywordRepeatInterval {
-            return false
-        }
-        
-        return true
-    }
-    
     private func updateNoise(with level: Float) {
         let clamped = max(0, min(level, 1))
         
@@ -87,49 +62,33 @@ final class KeywordDetector {
             return
         }
         
-        let alpha: Float = clamped > noiseFloor ? noiseLearningRate * 0.5 : noiseLearningRate
+        let alpha = clamped > noiseFloor ? noiseLearningRate * 0.5 : noiseLearningRate
         let updated = (1 - alpha) * noiseFloor + alpha * clamped
         noiseFloor = min(max(updated, 0.0005), maxNoiseFloor)
     }
     
-    private func normalize(_ values: [Float]) -> [Float] {
-        guard !values.isEmpty else { return [] }
-        
-        var mean: Float = 0
-        vDSP_meanv(values, 1, &mean, vDSP_Length(values.count))
-        
-        var centered = [Float](repeating: 0, count: values.count)
-        var negativeMean = -mean
-        vDSP_vsadd(values, 1, &negativeMean, &centered, 1, vDSP_Length(values.count))
-        
-        var variance: Float = 0
-        vDSP_measqv(centered, 1, &variance, vDSP_Length(values.count))
-        let std = sqrtf(variance)
-        
-        guard std > .ulpOfOne else { return centered }
-        
-        var normalized = [Float](repeating: 0, count: values.count)
-        var divisor = std
-        vDSP_vsdiv(centered, 1, &divisor, &normalized, 1, vDSP_Length(values.count))
-        return normalized
+    private func currentThreshold() -> Float {
+        let boosted = noiseFloor * noiseBoost
+        return max(minSignalLevel, min(boosted, maxNoiseFloor))
     }
     
-    private func representativeFingerprint(from fingerprints: [[Float]]) -> [Float] {
-        guard let first = fingerprints.first, !first.isEmpty else { return [] }
-        
-        var accumulator = [Float](repeating: 0, count: first.count)
-        var count: Float = 0
-        
-        for fingerprint in fingerprints where fingerprint.count == first.count {
-            vDSP_vadd(accumulator, 1, fingerprint, 1, &accumulator, 1, vDSP_Length(first.count))
-            count += 1
+    private func canTrigger(keywordID: UUID) -> Bool {
+        let now = Date()
+        if let last = lastGlobalDetection, now.timeIntervalSince(last) < globalCooldown {
+            return false
         }
         
-        guard count > 0 else { return [] }
+        if let previous = lastKeywordDetections[keywordID], now.timeIntervalSince(previous) < keywordCooldown {
+            return false
+        }
         
-        var divisor = count
-        vDSP_vsdiv(accumulator, 1, &divisor, &accumulator, 1, vDSP_Length(first.count))
-        return normalize(accumulator)
+        return true
+    }
+    
+    private func markDetection(for keywordID: UUID) {
+        let now = Date()
+        lastGlobalDetection = now
+        lastKeywordDetections[keywordID] = now
     }
     
     private func fingerprint(for buffer: [Float], offset: Int, length: Int, cache: inout [FingerprintCacheKey: [Float]]) -> [Float] {
@@ -149,37 +108,34 @@ final class KeywordDetector {
             guard let self = self else { return }
             
             self.sampleRate = sampleRate
-            let enabledKeywords = keywords.filter { $0.isEnabled }
-            
-            self.keywords = enabledKeywords.compactMap { keyword -> CachedKeyword? in
-                let cachedVariations = keyword.variations.compactMap { variation -> CachedVariation? in
+            let enabled = keywords.filter { $0.isEnabled }
+            self.keywords = enabled.compactMap { keyword -> CachedKeyword? in
+                let variations = keyword.variations.compactMap { variation -> CachedVariation? in
                     guard !variation.fingerprint.isEmpty else { return nil }
-                    let sampleCount = max(1, Int(variation.duration * sampleRate))
-                    return CachedVariation(sampleCount: sampleCount, duration: variation.duration, fingerprint: variation.fingerprint)
+                    let safeDuration = max(variation.duration, 0.3)
+                    let sampleCount = max(1, Int(safeDuration * sampleRate))
+                    return CachedVariation(sampleCount: sampleCount, fingerprint: variation.fingerprint)
                 }
+                guard !variations.isEmpty else { return nil }
                 
-                guard !cachedVariations.isEmpty else { return nil }
-                
-                let representative = self.representativeFingerprint(from: cachedVariations.map { $0.fingerprint })
-                return CachedKeyword(
-                    keywordID: keyword.id,
-                    keywordName: keyword.name,
-                    representative: representative,
-                    variations: cachedVariations
-                )
+                return CachedKeyword(id: keyword.id, name: keyword.name, variations: variations)
             }
             
-            let longestDuration = self.keywords.flatMap { $0.variations.map { $0.duration } }.max() ?? 0
-            let windowDuration = max(longestDuration + self.searchPadding, 0.5)
+            let longest = self.keywords.flatMap { $0.variations.map { Double($0.sampleCount) / sampleRate } }.max() ?? 0
+            let windowDuration = max(longest + self.windowPadding, 0.5)
+            
             self.maxSampleCount = Int(windowDuration * sampleRate) + 1_024
-            if self.maxSampleCount <= 0 { self.maxSampleCount = 1_024 }
+            if self.maxSampleCount <= 0 {
+                self.maxSampleCount = 1_024
+            }
+            
             self.circularBuffer.removeAll(keepingCapacity: false)
-            
             self.noiseFloor = 0
-            self.lastKeywordID = nil
+            self.lastGlobalDetection = nil
+            self.lastKeywordDetections.removeAll(keepingCapacity: true)
             
-            let variationTotal = self.keywords.reduce(0) { $0 + $1.variations.count }
-            print("[KeywordDetector] configure: Cached \(variationTotal) variations at sampleRate \(sampleRate)")
+            let variationCount = self.keywords.reduce(0) { $0 + $1.variations.count }
+            print("[KeywordDetector] configure: Cached \(variationCount) variations at sampleRate \(sampleRate)")
         }
     }
     
@@ -190,85 +146,72 @@ final class KeywordDetector {
             
             let clampedLevel = max(0, min(level, 1))
             self.updateNoise(with: clampedLevel)
-            let dynamicThreshold = max(self.minActiveLevel, max(self.silenceThreshold, self.noiseFloor * self.signalBoost))
             self.appendSamples(samples)
-            guard clampedLevel >= dynamicThreshold else { return }
+            let triggerLevel = self.currentThreshold()
+            guard clampedLevel >= triggerLevel else { return }
             
             let availableCount = self.circularBuffer.count
-            let searchCount = min(availableCount, self.maxSampleCount)
-            guard searchCount > 0 else { return }
+            guard availableCount > 0 else { return }
             
+            let searchCount = min(availableCount, self.maxSampleCount)
             let startIndex = availableCount - searchCount
             let searchBuffer = Array(self.circularBuffer[startIndex..<availableCount])
+            guard !searchBuffer.isEmpty else { return }
             
             var cache: [FingerprintCacheKey: [Float]] = [:]
+            var bestKeyword: CachedKeyword?
             var bestScore: Float = 0
-            var runnerUpScore: Float = 0
-            var bestCandidate: DetectionCandidate?
+            var runnerUp: Float = 0
             
             for keyword in self.keywords {
-                var keywordBestScore: Float = 0
-                var keywordBestOffset = 0
-                var keywordBestLength = 0
+                var keywordBest: Float = 0
                 
                 for variation in keyword.variations {
                     let sampleCount = variation.sampleCount
                     guard sampleCount > 0, searchBuffer.count >= sampleCount else { continue }
                     
-                    let strideLength = max(1, sampleCount / self.windowStrideDivisor)
-                    var offset = 0
+                    let stride = max(1, sampleCount / self.strideDivisor)
+                    let latestStart = max(0, searchBuffer.count - sampleCount * self.retentionMultiplier)
+                    var offset = min(latestStart, searchBuffer.count - sampleCount)
                     
                     while offset + sampleCount <= searchBuffer.count {
                         let fingerprint = self.fingerprint(for: searchBuffer, offset: offset, length: sampleCount, cache: &cache)
                         guard fingerprint.count == variation.fingerprint.count else {
-                            offset += strideLength
+                            offset += stride
                             continue
                         }
                         
                         let similarity = AudioFingerprint.similarity(between: fingerprint, and: variation.fingerprint)
-                        if similarity > keywordBestScore {
-                            keywordBestScore = similarity
-                            keywordBestOffset = offset
-                            keywordBestLength = sampleCount
+                        if similarity > keywordBest {
+                            keywordBest = similarity
                         }
                         
-                        offset += strideLength
+                        offset += stride
                     }
                 }
+                guard keywordBest > 0 else { continue }
                 
-                guard keywordBestScore > 0, keywordBestLength > 0 else { continue }
-                
-                let aggregatedSimilarity: Float
-                if keyword.representative.isEmpty {
-                    aggregatedSimilarity = keywordBestScore
-                } else {
-                    let fingerprint = self.fingerprint(for: searchBuffer, offset: keywordBestOffset, length: keywordBestLength, cache: &cache)
-                    aggregatedSimilarity = AudioFingerprint.similarity(between: fingerprint, and: keyword.representative)
-                }
-                
-                let effectiveScore = min(keywordBestScore, aggregatedSimilarity)
-                if effectiveScore > bestScore {
-                    runnerUpScore = bestScore
-                    bestScore = effectiveScore
-                    bestCandidate = DetectionCandidate(keyword: keyword, variationSimilarity: keywordBestScore, aggregatedSimilarity: aggregatedSimilarity)
-                } else if effectiveScore > runnerUpScore {
-                    runnerUpScore = effectiveScore
+                if keywordBest > bestScore {
+                    runnerUp = bestScore
+                    bestScore = keywordBest
+                    bestKeyword = keyword
+                } else if keywordBest > runnerUp {
+                    runnerUp = keywordBest
                 }
             }
-            guard let candidate = bestCandidate else { return }
-            guard candidate.variationSimilarity >= self.primaryThreshold else { return }
-            guard candidate.aggregatedSimilarity >= self.aggregateThreshold else { return }
-            guard bestScore - runnerUpScore >= self.similarityMargin else { return }
-            guard self.canTriggerDetection(for: candidate.keyword.keywordID) else { return }
+            guard let candidate = bestKeyword else { return }
+            guard bestScore >= self.similarityThreshold else { return }
+            guard bestScore - runnerUp >= self.marginThreshold else { return }
+            guard self.canTrigger(keywordID: candidate.id) else { return }
             
+            self.markDetection(for: candidate.id)
             self.noiseFloor = min(self.noiseFloor, clampedLevel * 0.6)
-            self.lastDetection = Date()
-            self.lastKeywordID = candidate.keyword.keywordID
+            self.circularBuffer.removeAll(keepingCapacity: true)
             DispatchQueue.main.async {
-                self.onDetection?(candidate.keyword.keywordID, candidate.keyword.keywordName)
+                self.onDetection?(candidate.id, candidate.name)
             }
             
-            print("[KeywordDetector] process: Detected keyword \(candidate.keyword.keywordName) with similarity \(candidate.variationSimilarity) aggregated=\(candidate.aggregatedSimilarity)")
+            print("[KeywordDetector] process: Detected keyword \(candidate.name) with similarity \(bestScore)")
         }
     }
 }

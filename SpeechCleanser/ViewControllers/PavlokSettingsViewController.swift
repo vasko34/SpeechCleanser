@@ -13,7 +13,6 @@ class PavlokSettingsViewController: UIViewController {
     private let infoLabel = UILabel()
     private let initialAPIKey: String?
     private let initialIntensity: Int
-    private var backgroundObserver: NSObjectProtocol?
     
     var onSave: ((String?, Int) -> Void)?
     
@@ -82,26 +81,20 @@ class PavlokSettingsViewController: UIViewController {
             intensityField.heightAnchor.constraint(equalToConstant: 44)
         ])
         
-        backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.dismissKeyboard(reason: "willResignActive")
-        }
-        
         print("[PavlokSettingsViewController] viewDidLoad: Loaded with API key present=\(initialAPIKey?.isEmpty == false)")
     }
     
-    deinit {
-        if let observer = backgroundObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        dismissKeyboard(reason: "viewWillDisappear")
     }
     
     private func dismissKeyboard(reason: String) {
         guard view.window != nil else { return }
+        guard apiKeyField.isFirstResponder || intensityField.isFirstResponder else { return }
         
-        if apiKeyField.isFirstResponder || intensityField.isFirstResponder {
-            view.endEditing(true)
-            print("[PavlokSettingsViewController] dismissKeyboard: Resigned via \(reason)")
-        }
+        view.endEditing(true)
+        print("[PavlokSettingsViewController] dismissKeyboard: Resigned via \(reason)")
     }
     
     @objc private func cancelTapped() {

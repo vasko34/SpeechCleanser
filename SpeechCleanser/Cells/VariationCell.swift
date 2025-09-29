@@ -18,11 +18,18 @@ class VariationCell: UITableViewCell {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(titleLabel)
         
+        let topConstraint = titleLabel.topAnchor.constraint(greaterThanOrEqualTo: contentView.topAnchor, constant: 12)
+        topConstraint.priority = .defaultHigh
+        
+        let bottomConstraint = titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -12)
+        bottomConstraint.priority = .defaultHigh
+        
         NSLayoutConstraint.activate([
-            titleLabel.trailingAnchor.constraint(greaterThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            titleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
+            titleLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            bottomConstraint,
+            topConstraint
         ])
     }
     

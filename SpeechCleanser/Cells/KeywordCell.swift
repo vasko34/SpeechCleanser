@@ -22,11 +22,18 @@ class KeywordCell: UITableViewCell {
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(nameLabel)
         
+        let topConstraint = nameLabel.topAnchor.constraint(greaterThanOrEqualTo: contentView.topAnchor, constant: 12)
+        topConstraint.priority = .defaultHigh
+        
+        let bottomConstraint = nameLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -12)
+        bottomConstraint.priority = .defaultHigh
+        
         NSLayoutConstraint.activate([
-            nameLabel.trailingAnchor.constraint(greaterThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            nameLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
-            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
+            nameLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            bottomConstraint,
+            topConstraint
         ])
         
         toggle.addTarget(self, action: #selector(switched), for: .valueChanged)

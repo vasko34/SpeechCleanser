@@ -18,11 +18,12 @@ struct AudioFingerprint {
         vDSP_meanv(values, 1, &mean, vDSP_Length(values.count))
         
         var centered = [Float](repeating: 0, count: values.count)
-        vDSP_vsb(values, 1, &mean, &centered, 1, vDSP_Length(values.count))
+        var negativeMean = -mean
+        vDSP_vsadd(values, 1, &negativeMean, &centered, 1, vDSP_Length(values.count))
         
         var std: Float = 0
         vDSP_measqv(centered, 1, &std, vDSP_Length(values.count))
-        std = sqrtf(std / Float(values.count))
+        std = sqrtf(std)
         
         guard std > .ulpOfOne else { return centered }
         
@@ -33,11 +34,12 @@ struct AudioFingerprint {
     }
     
     static func fromFile(url: URL) -> (fingerprint: [Float], duration: TimeInterval) {
-        var audioFile: AVAudioFile
+        let audioFile: AVAudioFile
         do {
             audioFile = try AVAudioFile(forReading: url)
         } catch {
             print("AVAudioFile failed with error: \(error.localizedDescription)")
+            return ([], 0)
         }
         
         let processingFormat = audioFile.processingFormat
@@ -45,18 +47,19 @@ struct AudioFingerprint {
         
         guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frameCapacity) else {
             print("AudioFingerprint unableToCreateBuffer")
-            return
+            return ([], 0)
         }
         
         do {
             try audioFile.read(into: buffer)
         } catch {
             print("AVAudioFile failed with error: \(error.localizedDescription)")
+            return ([], 0)
         }
         
         guard let channelData = buffer.floatChannelData?[0], buffer.frameLength > 0 else {
             print("AudioFingerprint emptySignal")
-            return
+            return ([], 0)
         }
         
         let frameLength = Int(buffer.frameLength)
@@ -85,7 +88,7 @@ struct AudioFingerprint {
                 let count = upperBound - startIndex
                 var energy: Float = 0
                 vDSP_measqv(baseAddress + startIndex, 1, &energy, vDSP_Length(count))
-                let rms = sqrtf(energy / Float(max(count, 1)))
+                let rms = sqrtf(energy)
                 fingerprint.append(rms)
                 if fingerprint.count == segments { break }
             }

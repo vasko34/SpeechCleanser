@@ -51,17 +51,17 @@ final class KeywordDetector {
             self.variations = keywords
                 .filter { $0.isEnabled }
                 .flatMap { keyword in
-                    keyword.variations.map { variation in
+                    keyword.variations.compactMap { variation -> CachedVariation? in
                         guard !variation.fingerprint.isEmpty else { return nil }
                         
-                        CachedVariation(
+                        return CachedVariation(
                             keywordID: keyword.id,
                             keywordName: keyword.name,
                             variationID: variation.id,
                             duration: variation.duration,
                             fingerprint: variation.fingerprint
                         )
-                    }.compactMap { $0 }
+                    }
                 }
             
             let longestDuration = self.variations.map { $0.duration }.max() ?? 0

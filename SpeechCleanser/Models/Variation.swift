@@ -28,15 +28,28 @@ struct Variation: Codable, Equatable, Identifiable {
     }
     
     init(from decoder: Decoder) {
+        var decodedID = UUID()
+        var decodedFilePath = ""
+        var decodedDuration: TimeInterval = 0
+        var decodedFingerprint: [Float] = []
+        
         do {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-            filePath = try container.decode(String.self, forKey: .filePath)
-            duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
-            fingerprint = try container.decodeIfPresent([Float].self, forKey: .fingerprint) ?? []
+            if let value = try container.decodeIfPresent(UUID.self, forKey: .id) {
+                decodedID = value
+            }
+            
+            decodedFilePath = try container.decode(String.self, forKey: .filePath)
+            decodedDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
+            decodedFingerprint = try container.decodeIfPresent([Float].self, forKey: .fingerprint) ?? []
         } catch {
             print("Decoder failed with error: \(error.localizedDescription)")
         }
+        
+        id = decodedID
+        filePath = decodedFilePath
+        duration = decodedDuration
+        fingerprint = decodedFingerprint
     }
     
     func encode(to encoder: Encoder) {

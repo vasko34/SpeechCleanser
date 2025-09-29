@@ -38,7 +38,7 @@ struct AudioFingerprint {
         do {
             audioFile = try AVAudioFile(forReading: url)
         } catch {
-            print("AVAudioFile failed with error: \(error.localizedDescription)")
+            print("[AudioFingerprint][ERROR] fromFile: AVAudioFile failed with error: \(error.localizedDescription)")
             return ([], 0)
         }
         
@@ -46,19 +46,19 @@ struct AudioFingerprint {
         let frameCapacity = AVAudioFrameCount(audioFile.length)
         
         guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frameCapacity) else {
-            print("AudioFingerprint unableToCreateBuffer")
+            print("[AudioFingerprint][ERROR] fromFile: AudioFingerprint unableToCreateBuffer")
             return ([], 0)
         }
         
         do {
             try audioFile.read(into: buffer)
         } catch {
-            print("AVAudioFile failed with error: \(error.localizedDescription)")
+            print("[AudioFingerprint][ERROR] fromFile: AVAudioFile failed with error: \(error.localizedDescription)")
             return ([], 0)
         }
         
         guard let channelData = buffer.floatChannelData?[0], buffer.frameLength > 0 else {
-            print("AudioFingerprint emptySignal")
+            print("[AudioFingerprint][ERROR] fromFile: AudioFingerprint emptySignal")
             return ([], 0)
         }
         
@@ -72,7 +72,10 @@ struct AudioFingerprint {
     }
     
     static func generateFingerprint(from samples: [Float], segments: Int = segmentCount) -> [Float] {
-        guard !samples.isEmpty else { return [] }
+        guard !samples.isEmpty else {
+            print("[AudioFingerprint][ERROR] generateFingerprint: Empty samples input")
+            return []
+        }
         
         let totalSamples = samples.count
         let segmentLength = max(1, totalSamples / segments)

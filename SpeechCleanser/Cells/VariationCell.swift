@@ -19,10 +19,12 @@ class VariationCell: UITableViewCell {
         contentView.addSubview(titleLabel)
         
         NSLayoutConstraint.activate([
+            titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -10),
             titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            titleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10)
+            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
+            
+            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
         
         accessoryType = .disclosureIndicator
@@ -41,5 +43,6 @@ class VariationCell: UITableViewCell {
     func configure(with variation: Variation, index: Int) {
         let durationText = formattedDuration(variation.duration)
         titleLabel.text = "Variation \(index) – \(durationText)"
+        print("[VariationCell] configure: Showing variation index \(index) duration=\(durationText)")
     }
 }

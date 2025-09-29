@@ -39,7 +39,7 @@ final class PavlokService {
     
     func sendZap(for keyword: Keyword) {
         guard let token = apiKey, !token.isEmpty else {
-            print("PavlokService: API key missing, skipping zap")
+            print("[PavlokService][ERROR] sendZap: API key missing, skipping zap")
             return
         }
         
@@ -57,19 +57,22 @@ final class PavlokService {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
         } catch {
-            print("PavlokService JSON encoding error: \(error.localizedDescription)")
+            print("[PavlokService][ERROR] sendZap: PavlokService JSON encoding failed with error: \(error.localizedDescription)")
             return
         }
         
         URLSession.shared.dataTask(with: request) { _, response, error in
             if let error = error {
-                print("PavlokService request error: \(error.localizedDescription)")
+                print("[PavlokService][ERROR] sendZap: PavlokService request failed with error: \(error.localizedDescription)")
                 return
             }
 
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                print("PavlokService unexpected status:", http.statusCode)
+                print("[PavlokService][ERROR] sendZap: PavlokService unexpected status: \(http.statusCode)")
+                return
             }
+            
+            print("[PavlokService] sendZap: Triggered zap for keyword \(keyword.name) with intensity \(self.intensity)")
         }.resume()
     }
 }

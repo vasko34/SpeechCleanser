@@ -68,6 +68,7 @@ final class KeywordDetector {
             self.maxSampleCount = Int(longestDuration * sampleRate) + 1_024
             if self.maxSampleCount <= 0 { self.maxSampleCount = 1_024 }
             self.circularBuffer = []
+            print("[KeywordDetector] configure: Cached \(self.variations.count) variations at sampleRate \(sampleRate)")
         }
     }
     
@@ -87,9 +88,12 @@ final class KeywordDetector {
                 let similarity = AudioFingerprint.similarity(between: fingerprint, and: variation.fingerprint)
                 if similarity >= 0.78, self.canTriggerDetection() {
                     self.lastDetection = Date()
+                    
                     DispatchQueue.main.async {
                         self.onDetection?(variation.keywordID, variation.keywordName)
                     }
+                    print("[KeywordDetector] process: Detected keyword \(variation.keywordName) with similarity \(similarity)")
+                    
                     break
                 }
             }

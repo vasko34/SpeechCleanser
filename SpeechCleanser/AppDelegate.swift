@@ -17,8 +17,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         AudioManager.shared.onKeywordDetected = { keyword in
             NotificationManager.sendDetectionNotification(for: keyword)
             PavlokService.shared.sendZap(for: keyword)
+            print("[AppDelegate] didFinishLaunchingWithOptions: Keyword detected callback for \(keyword.name)")
         }
         
+        print("[AppDelegate] didFinishLaunchingWithOptions: Launch complete")
         return true
     }
     
@@ -27,7 +29,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
     
     func application(_ application: UIApplication, didDiscardSceneSessions sceneSessions: Set<UISceneSession>) {
-        
+        print("[AppDelegate] didDiscardSceneSessions: Discarded sessions count \(sceneSessions.count)")
     }
 }
 

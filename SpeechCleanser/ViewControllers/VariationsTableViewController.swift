@@ -32,11 +32,14 @@ class VariationsTableViewController: UITableViewController {
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addVariation))
         tableView.register(VariationCell.self, forCellReuseIdentifier: VariationCell.reuseID)
+        print("[VariationsTableViewController] viewDidLoad: Configured for keywordID \(keywordID.uuidString)")
     }
     
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        
         reloadKeyword()
+        print("[VariationsTableViewController] viewWillAppear: Reloaded keyword data")
     }
     
     private func reloadKeyword() {
@@ -44,6 +47,7 @@ class VariationsTableViewController: UITableViewController {
         self.keyword = all.first(where: { $0.id == keywordID })
         self.title = keyword?.name
         self.tableView.reloadData()
+        print("[VariationsTableViewController] reloadKeyword: Keyword has \(self.keyword?.variations.count ?? 0) variations")
     }
     
     private func beginRecordingFlow() {
@@ -58,6 +62,7 @@ class VariationsTableViewController: UITableViewController {
             try session.setActive(true)
         } catch {
             showAlert(title: "Audio Error", message: error.localizedDescription)
+            print("[VariationsTableViewController][ERROR] beginRecordingFlow: Unable to start recording session with error: \(error.localizedDescription)")
             return
         }
         
@@ -79,6 +84,7 @@ class VariationsTableViewController: UITableViewController {
             self.recordStart = Date()
             self.recordURL = url
             
+            print("[VariationsTableViewController] beginRecordingFlow: Recording to \(url.lastPathComponent)")
             let alert = UIAlertController(title: "Recording…", message: "Speak your variation and tap Stop.", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Stop", style: .destructive, handler: { [weak self] _ in
                 self?.finishRecording()
@@ -88,6 +94,7 @@ class VariationsTableViewController: UITableViewController {
             self.present(alert, animated: true)
         } catch {
             showAlert(title: "Record Error", message: error.localizedDescription)
+            print("[VariationsTableViewController][ERROR] beginRecordingFlow: Failed to begin recording with error: \(error.localizedDescription)")
         }
     }
     
@@ -106,7 +113,7 @@ class VariationsTableViewController: UITableViewController {
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
-            print("Failed to deactivate recording session with error: \(error.localizedDescription)")
+            print("[VariationsTableViewController][ERROR] finishRecording: Failed to deactivate recording session with error: \(error.localizedDescription)")
         }
         
         guard let url = fileURL else { return }
@@ -114,7 +121,10 @@ class VariationsTableViewController: UITableViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var list = KeywordStore.shared.load()
             guard let self = self else { return }
-            guard let idx = list.firstIndex(where: { $0.id == self.keywordID }) else { return }
+            guard let idx = list.firstIndex(where: { $0.id == self.keywordID }) else {
+                print("[VariationsTableViewController][ERROR] finishRecording: Keyword missing during save")
+                return
+            }
             
             let analysis = AudioFingerprint.fromFile(url: url)
             var kword = list[idx]
@@ -128,12 +138,14 @@ class VariationsTableViewController: UITableViewController {
                 self.keyword = kword
                 self.tableView.reloadData()
                 AudioManager.shared.reloadKeywords()
+                print("[VariationsTableViewController] finishRecording: Saved new variation for keyword \(kword.name)")
             }
         }
         
         if resumeListeningAfterRecording {
             resumeListeningAfterRecording = false
             AudioManager.shared.start()
+            print("[VariationsTableViewController] finishRecording: Resumed background listening")
         }
     }
     
@@ -142,8 +154,10 @@ class VariationsTableViewController: UITableViewController {
             player = try AVAudioPlayer(contentsOf: url)
             player?.prepareToPlay()
             player?.play()
+            print("[VariationsTableViewController] play: Playing variation from \(url.lastPathComponent)")
         } catch {
             showAlert(title: "Playback Error", message: error.localizedDescription)
+            print("[VariationsTableViewController][ERROR] play: Failed to play variation with error: \(error.localizedDescription)")
         }
     }
     
@@ -151,6 +165,7 @@ class VariationsTableViewController: UITableViewController {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+        print("[VariationsTableViewController] showAlert: Presented alert with title \(title)")
     }
     
     @objc private func addVariation() {
@@ -158,22 +173,27 @@ class VariationsTableViewController: UITableViewController {
             DispatchQueue.main.async {
                 guard granted else {
                     self?.showAlert(title: "Microphone Denied", message: "Enable mic access in Settings.")
+                    print("[VariationsTableViewController][ERROR] addVariation: Microphone permission denied")
                     return
                 }
                 
                 self?.beginRecordingFlow()
+                print("[VariationsTableViewController] addVariation: Microphone permission granted")
             }
         }
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        keyword?.variations.count ?? 0
+        let count = keyword?.variations.count ?? 0
+        print("[VariationsTableViewController] numberOfRowsInSection: Returning \(count) rows")
+        return count
     }
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         guard let cell = tableView.dequeueReusableCell(withIdentifier: VariationCell.reuseID, for: indexPath) as? VariationCell, let varItem = keyword?.variations[indexPath.row] else { return UITableViewCell() }
         
         cell.configure(with: varItem, index: indexPath.row + 1)
+        print("[VariationsTableViewController] cellForRowAt: Configured cell for index \(indexPath.row)")
         return cell
     }
     
@@ -183,6 +203,7 @@ class VariationsTableViewController: UITableViewController {
         
         let url = KeywordStore.fileURL(for: varItem.filePath)
         play(url: url)
+        print("[VariationsTableViewController] didSelectRowAt: Selected variation index \(indexPath.row)")
     }
     
     override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
@@ -194,8 +215,9 @@ class VariationsTableViewController: UITableViewController {
         
         do {
             try FileManager.default.removeItem(at: fileURL)
+            print("[VariationsTableViewController] commitForRowAt: Removed file \(variation.filePath)")
         } catch {
-            print("FileManager failed to remove item with error: \(error.localizedDescription)")
+            print("[VariationsTableViewController][ERROR] commitForRowAt: FileManager failed to remove item with error: \(error.localizedDescription)")
         }
         
         keyword.variations.remove(at: indexPath.row)
@@ -208,5 +230,6 @@ class VariationsTableViewController: UITableViewController {
         self.keyword = keyword
         tableView.deleteRows(at: [indexPath], with: .automatic)
         AudioManager.shared.reloadKeywords()
+        print("[VariationsTableViewController] commitForRowAt: Deleted variation at index \(indexPath.row)")
     }
 }

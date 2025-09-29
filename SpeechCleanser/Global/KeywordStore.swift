@@ -28,9 +28,11 @@ final class KeywordStore {
         guard let data = userDefaults.data(forKey: defaultsKey) else { return [] }
         
         do {
-            return try decoder.decode([Keyword].self, from: data)
+            let decoded = try decoder.decode([Keyword].self, from: data)
+            print("[KeywordStore] load: Loaded \(decoded.count) keywords")
+            return decoded
         } catch {
-            print("KeywordStore load error: \(error.localizedDescription)")
+            print("[KeywordStore][ERROR] load: KeywordStore load failed with error: \(error.localizedDescription)")
             return []
         }
     }
@@ -39,8 +41,9 @@ final class KeywordStore {
         do {
             let data = try encoder.encode(keywords)
             userDefaults.set(data, forKey: defaultsKey)
+            print("[KeywordStore] save: Stored \(keywords.count) keywords")
         } catch {
-            print("KeywordStore save error: \(error.localizedDescription)")
+            print("[KeywordStore][ERROR] save: KeywordStore save failed with error: \(error.localizedDescription)")
         }
     }
 }

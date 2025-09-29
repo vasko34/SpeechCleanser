@@ -17,6 +17,7 @@ class KeywordsTableViewController: UITableViewController {
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addWord))
         tableView.register(KeywordCell.self, forCellReuseIdentifier: KeywordCell.reuseID)
+        print("[KeywordsTableViewController] viewDidLoad: Initialized")
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -24,18 +25,13 @@ class KeywordsTableViewController: UITableViewController {
         
         keywords = KeywordStore.shared.load()
         tableView.reloadData()
+        print("[KeywordsTableViewController] viewWillAppear: Reloaded with \(keywords.count) keywords")
     }
     
     @objc private func addWord() {
-        let alert = UIAlertController(title: "New Word", message: "Enter a name for the keyword", preferredStyle: .alert)
-        alert.addTextField { tf in
-            tf.placeholder = "Enter keyword"
-            tf.autocapitalizationType = .none
-        }
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Add", style: .default, handler: { [weak self] _ in
-            guard let self = self, let name = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return }
+        let controller = KeywordNameEntryViewController()
+        controller.onSave = { [weak self] name in
+            guard let self else { return }
             
             var list = KeywordStore.shared.load()
             list.append(Keyword(name: name, isEnabled: true, variations: []))
@@ -43,13 +39,16 @@ class KeywordsTableViewController: UITableViewController {
             self.keywords = list
             AudioManager.shared.reloadKeywords()
             self.tableView.reloadData()
-        }))
+            print("[KeywordsTableViewController] addWord: Added keyword \(name)")
+        }
         
-        present(alert, animated: true)
+        let navigation = UINavigationController(rootViewController: controller)
+        present(navigation, animated: true)
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        keywords.count
+        print("[KeywordsTableViewController] numberOfRowsInSection: Returning \(keywords.count) rows")
+        return keywords.count
     }
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -65,6 +64,7 @@ class KeywordsTableViewController: UITableViewController {
             self.keywords = list
             KeywordStore.shared.save(list)
             AudioManager.shared.reloadKeywords()
+            print("[KeywordsTableViewController] cellForRowAt: Toggled keyword \(keyword.name) to \(isOn)")
         }
         
         return cell
@@ -74,6 +74,7 @@ class KeywordsTableViewController: UITableViewController {
         let keyword = keywords[indexPath.row]
         let viewController = VariationsTableViewController(keywordID: keyword.id)
         navigationController?.pushViewController(viewController, animated: true)
+        print("[KeywordsTableViewController] didSelectRowAt: Selected keyword \(keyword.name)")
     }
     
     override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
@@ -85,14 +86,16 @@ class KeywordsTableViewController: UITableViewController {
         keywords = list
         tableView.deleteRows(at: [indexPath], with: .automatic)
         AudioManager.shared.reloadKeywords()
+        print("[KeywordsTableViewController] commitForRowAt: Deleted keyword \(keyword.name)")
         
         for variation in keyword.variations {
             let fileURL = KeywordStore.fileURL(for: variation.filePath)
             
             do {
                 try FileManager.default.removeItem(at: fileURL)
+                print("[KeywordsTableViewController] commitForRowAt: Removed file \(variation.filePath)")
             } catch {
-                print("FileManager failed to remove item with error: \(error.localizedDescription)")
+                print("[KeywordsTableViewController][ERROR] commitForRowAt: FileManager failed to remove item with error: \(error.localizedDescription)")
             }
         }
     }

@@ -7,14 +7,14 @@
 
 import Foundation
 
-enum CodingKeys: String, CodingKey {
-    case id
-    case filePath
-    case duration
-    case fingerprint
-}
-
 struct Variation: Codable, Equatable, Identifiable {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case filePath
+        case duration
+        case fingerprint
+    }
+    
     let id: UUID
     let filePath: String
     let duration: TimeInterval
@@ -43,7 +43,7 @@ struct Variation: Codable, Equatable, Identifiable {
             decodedDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
             decodedFingerprint = try container.decodeIfPresent([Float].self, forKey: .fingerprint) ?? []
         } catch {
-            print("Decoder failed with error: \(error.localizedDescription)")
+            print("[Variation][ERROR] initFromDecoder: Decoder failed with error: \(error.localizedDescription)")
         }
         
         id = decodedID
@@ -61,7 +61,7 @@ struct Variation: Codable, Equatable, Identifiable {
             try container.encode(duration, forKey: .duration)
             try container.encode(fingerprint, forKey: .fingerprint)
         } catch {
-            print("Encoder failed with error: \(error.localizedDescription)")
+            print("[Variation][ERROR] encode: Encoder failed with error: \(error.localizedDescription)")
         }
     }
 }

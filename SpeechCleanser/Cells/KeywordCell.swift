@@ -24,9 +24,11 @@ class KeywordCell: UITableViewCell {
         
         NSLayoutConstraint.activate([
             nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            nameLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -12),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            nameLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
-            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
+            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            
+            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
         
         toggle.addTarget(self, action: #selector(switched), for: .valueChanged)
@@ -42,11 +44,13 @@ class KeywordCell: UITableViewCell {
     @objc private func switched() {
         onToggle?(toggle.isOn)
         setEnabledAppearance(toggle.isOn)
+        print("[KeywordCell] switched: Keyword toggled to \(toggle.isOn)")
     }
     
     func configure(with keyword: Keyword) {
         nameLabel.text = keyword.name
         toggle.isOn = keyword.isEnabled
         setEnabledAppearance(keyword.isEnabled)
+        print("[KeywordCell] configure: Displaying keyword \(keyword.name) enabled=\(keyword.isEnabled)")
     }
 }

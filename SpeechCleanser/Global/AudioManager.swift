@@ -26,9 +26,15 @@ final class AudioManager {
     var running: Bool { isRunning }
     
     private init() {
-        detector.onDetection = { [weak self] keywordID, _ in
-            guard let keyword = self?.currentKeywords[keywordID] else { return }
-            self?.onKeywordDetected?(keyword)
+        detector.onDetection = { [weak self] keywordID, keywordName in
+            guard let self = self else { return }
+            guard let keyword = self.currentKeywords[keywordID] else {
+                print("[AudioManager][ERROR] init: Missing keyword for detection id \(keywordID.uuidString)")
+                return
+            }
+            
+            print("[AudioManager] init: Detected keyword \(keywordName)")
+            self.onKeywordDetected?(keyword)
         }
     }
     
@@ -39,6 +45,10 @@ final class AudioManager {
             self?.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "AudioDetection") {
                 self?.endBackgroundTask()
             }
+            
+            if let task = self?.backgroundTask {
+                print("[AudioManager] beginBackgroundTask: Started task \(task.rawValue)")
+            }
         }
     }
     
@@ -48,6 +58,7 @@ final class AudioManager {
             
             if self.backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(self.backgroundTask)
+                print("[AudioManager] endBackgroundTask: Ended task \(self.backgroundTask.rawValue)")
                 self.backgroundTask = .invalid
             }
         }
@@ -57,16 +68,20 @@ final class AudioManager {
         let keywords = KeywordStore.shared.load()
         currentKeywords = Dictionary(uniqueKeysWithValues: keywords.map { ($0.id, $0) })
         detector.configure(keywords: keywords, sampleRate: currentSampleRate)
+        print("[AudioManager] reloadKeywords: Loaded \(keywords.count) keywords with sampleRate \(currentSampleRate)")
     }
     
     func start() {
-        guard !isRunning else { return }
+        guard !isRunning else {
+            print("[AudioManager] start: Ignored start request because engine is already running")
+            return
+        }
         
         do {
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            print("AVAudioSession configuration failed with error: \(error.localizedDescription)")
+            print("[AudioManager][ERROR] start: AVAudioSession configuration failed with error: \(error.localizedDescription)")
         }
         
         let input = engine.inputNode
@@ -74,6 +89,7 @@ final class AudioManager {
         
         currentSampleRate = format.sampleRate
         reloadKeywords()
+        print("[AudioManager] start: Installing tap with bufferSize 1024 at sampleRate \(currentSampleRate)")
         
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self = self else { return }
@@ -98,14 +114,18 @@ final class AudioManager {
             try engine.start()
             beginBackgroundTask()
         } catch {
-            print("AVAudioEngine failed to start engine with error: \(error.localizedDescription)")
+            print("[AudioManager][ERROR] start: AVAudioEngine failed to start engine with error: \(error.localizedDescription)")
         }
         
         isRunning = true
+        print("[AudioManager] start: Engine started")
     }
     
     func stop() {
-        guard isRunning else { return }
+        guard isRunning else {
+            print("[AudioManager] stop: Ignored stop request because engine is not running")
+            return
+        }
         
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
@@ -113,10 +133,11 @@ final class AudioManager {
         do {
             try session.setActive(false)
         } catch {
-            print("AVAudioSession failed to setActive with error: \(error.localizedDescription)")
+            print("[AudioManager][ERROR] stop: AVAudioSession failed to setActive with error: \(error.localizedDescription)")
         }
         
         endBackgroundTask()
         isRunning = false
+        print("[AudioManager] stop: Engine stopped")
     }
 }

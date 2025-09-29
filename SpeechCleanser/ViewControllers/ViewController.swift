@@ -26,7 +26,7 @@ class ViewController: UIViewController {
         toggleButton.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
         
         manageWordsButton.setTitle("Custom Keywords", for: .normal)
-        manageWordsButton.addTarget(self, action: #selector(openCustomWords), for: .touchUpInside)
+        manageWordsButton.addTarget(self, action: #selector(openKeywordsTableViewController), for: .touchUpInside)
         manageWordsButton.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
         
         levelLabel.text = "Level: —"
@@ -74,6 +74,8 @@ class ViewController: UIViewController {
                 self?.levelLabel.text = String(format: "Level: %.3f", level)
             }
         }
+        
+        print("[ViewController] viewDidLoad: UI configured")
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -81,6 +83,7 @@ class ViewController: UIViewController {
         
         updatePavlokStatus()
         updateToggleButtonTitle()
+        print("[ViewController] viewWillAppear: Updated Pavlok status and toggle title")
     }
     
     private func updatePavlokStatus() {
@@ -88,12 +91,14 @@ class ViewController: UIViewController {
         let intensity = PavlokService.shared.intensity
         pavlokStatusLabel.text = configured ? "Pavlok ready – intensity \(intensity)" : "Pavlok not configured"
         pavlokStatusLabel.textColor = configured ? .systemGreen : .systemRed
+        print("[ViewController] updatePavlokStatus: Configured=\(configured) intensity=\(intensity)")
     }
     
     private func showAlert(title: String, message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+        print("[ViewController] showAlert: Presented alert with title \(title)")
     }
     
     private func updateToggleButtonTitle() {
@@ -105,48 +110,40 @@ class ViewController: UIViewController {
         if AudioManager.shared.running {
             AudioManager.shared.stop()
             updateToggleButtonTitle()
+            print("[ViewController] toggleListening: Stopped listening")
         } else {
             AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
                 DispatchQueue.main.async {
                     if granted {
                         AudioManager.shared.start()
                         self?.updateToggleButtonTitle()
+                        print("[ViewController] toggleListening: Started listening")
                     } else {
                         self?.showAlert(title: "Microphone Denied", message: "Enable mic access in Settings.")
+                        print("[ViewController][ERROR] toggleListening: Microphone permission denied")
                     }
                 }
             }
         }
     }
     
-    @objc private func openCustomWords() {
+    @objc private func openKeywordsTableViewController() {
         let viewController = KeywordsTableViewController()
         navigationController?.pushViewController(viewController, animated: true)
+        print("[ViewController] openKeywordsTableViewController: Navigated to keywords list")
     }
     
     @objc private func configurePavlok() {
-        let alert = UIAlertController(title: "Pavlok Settings", message: "Provide your Pavlok API token and zap intensity.", preferredStyle: .alert)
-        alert.addTextField { textField in
-            textField.placeholder = "API Token"
-            textField.text = PavlokService.shared.apiKey
-        }
-        alert.addTextField { textField in
-            textField.placeholder = "Intensity (10-100)"
-            textField.keyboardType = .numberPad
-            textField.text = String(PavlokService.shared.intensity)
-        }
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Save", style: .default, handler: { [weak self] _ in
-            let token = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let intensityText = alert.textFields?.last?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            PavlokService.shared.apiKey = token
-            if let value = Int(intensityText) {
-                PavlokService.shared.intensity = value
-            }
+        let controller = PavlokSettingsViewController(apiKey: PavlokService.shared.apiKey, intensity: PavlokService.shared.intensity)
+        controller.onSave = { [weak self] apiKey, intensity in
+            PavlokService.shared.apiKey = apiKey
+            PavlokService.shared.intensity = intensity
             self?.updatePavlokStatus()
-        }))
+            print("[ViewController] configurePavlok: Saved settings")
+        }
         
-        present(alert, animated: true)
+        let navigation = UINavigationController(rootViewController: controller)
+        present(navigation, animated: true)
+        print("[ViewController] configurePavlok: Presented settings controller")
     }
 }

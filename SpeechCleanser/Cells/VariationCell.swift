@@ -22,9 +22,7 @@ class VariationCell: UITableViewCell {
             titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -10),
             titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
-            
-            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10)
         ])
         
         accessoryType = .disclosureIndicator

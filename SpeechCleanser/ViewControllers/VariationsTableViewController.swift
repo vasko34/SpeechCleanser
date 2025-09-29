@@ -148,7 +148,9 @@ class VariationsTableViewController: UITableViewController {
             let analysis = AudioFingerprint.fromFile(url: url)
             var kword = list[idx]
             let relativePath = url.lastPathComponent
-            let variation = Variation(filePath: relativePath, duration: actualDuration, fingerprint: analysis.fingerprint)
+            let measuredDuration = max(actualDuration, analysis.duration)
+            let safeDuration = max(measuredDuration, 0.05)
+            let variation = Variation(filePath: relativePath, duration: safeDuration, fingerprint: analysis.fingerprint)
             kword.variations.append(variation)
             list[idx] = kword
             KeywordStore.shared.save(list)
@@ -169,8 +171,18 @@ class VariationsTableViewController: UITableViewController {
     }
     
     private func play(url: URL) {
+        player?.stop()
+        
         do {
+            let session = AVAudioSession.sharedInstance()
+            let options: AVAudioSession.CategoryOptions = [.mixWithOthers, .defaultToSpeaker, .allowBluetooth]
+            let mode: AVAudioSession.Mode = AudioManager.shared.running ? .measurement : .default
+            
+            try session.setCategory(.playAndRecord, mode: mode, options: options)
+            try session.setActive(true)
+            
             player = try AVAudioPlayer(contentsOf: url)
+            player?.delegate = self
             player?.prepareToPlay()
             player?.play()
             print("[VariationsTableViewController] play: Playing variation from \(url.lastPathComponent)")
@@ -250,5 +262,19 @@ class VariationsTableViewController: UITableViewController {
         tableView.deleteRows(at: [indexPath], with: .automatic)
         AudioManager.shared.reloadKeywords()
         print("[VariationsTableViewController] commitForRowAt: Deleted variation at index \(indexPath.row)")
+    }
+}
+
+// MARK: - AVAudioPlayerDelegate
+
+extension VariationsTableViewController: AVAudioPlayerDelegate {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard !AudioManager.shared.running else { return }
+        
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("[VariationsTableViewController][ERROR] audioPlayerDidFinishPlaying: Failed to deactivate session with error: \(error.localizedDescription)")
+        }
     }
 }

@@ -26,9 +26,7 @@ class KeywordCell: UITableViewCell {
             nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
             nameLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -12),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            
-            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
         ])
         
         toggle.addTarget(self, action: #selector(switched), for: .valueChanged)

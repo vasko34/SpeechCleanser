@@ -45,7 +45,12 @@ struct AudioFingerprint {
         let processingFormat = audioFile.processingFormat
         let frameCapacity = AVAudioFrameCount(audioFile.length)
         
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frameCapacity) else {
+        guard let floatFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: processingFormat.sampleRate, channels: processingFormat.channelCount, interleaved: false) else {
+            print("[AudioFingerprint][ERROR] fromFile: Unable to create float format")
+            return ([], 0)
+        }
+        
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: frameCapacity) else {
             print("[AudioFingerprint][ERROR] fromFile: AudioFingerprint unableToCreateBuffer")
             return ([], 0)
         }
@@ -57,16 +62,41 @@ struct AudioFingerprint {
             return ([], 0)
         }
         
-        guard let channelData = buffer.floatChannelData?[0], buffer.frameLength > 0 else {
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else {
             print("[AudioFingerprint][ERROR] fromFile: AudioFingerprint emptySignal")
             return ([], 0)
         }
         
-        let frameLength = Int(buffer.frameLength)
-        let data = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
+        guard let floatPointers = buffer.floatChannelData else {
+            print("[AudioFingerprint][ERROR] fromFile: Missing float channel data")
+            return ([], 0)
+        }
         
-        let fingerprint = generateFingerprint(from: data, segments: segmentCount)
-        let duration = TimeInterval(Double(frameLength) / processingFormat.sampleRate)
+        let channelCount = Int(buffer.format.channelCount)
+        guard channelCount > 0 else {
+            print("[AudioFingerprint][ERROR] fromFile: AudioFingerprint missingChannels")
+            return ([], 0)
+        }
+        
+        let channels = UnsafeBufferPointer(start: floatPointers, count: channelCount)
+        var monoSamples: [Float] = []
+        if channelCount == 1, let firstPointer = channels.first {
+            monoSamples = Array(UnsafeBufferPointer(start: firstPointer, count: frameLength))
+        } else {
+            monoSamples = [Float](repeating: 0, count: frameLength)
+            monoSamples.withUnsafeMutableBufferPointer { buffer in
+                guard let baseAddress = buffer.baseAddress else { return }
+                for pointer in channels {
+                    vDSP_vadd(pointer, 1, baseAddress, 1, baseAddress, 1, vDSP_Length(frameLength))
+                }
+                var divisor = Float(channelCount)
+                vDSP_vsdiv(baseAddress, 1, &divisor, baseAddress, 1, vDSP_Length(frameLength))
+            }
+        }
+        
+        let fingerprint = generateFingerprint(from: monoSamples, segments: segmentCount)
+        let duration = TimeInterval(Double(frameLength) / floatFormat.sampleRate)
         
         return (fingerprint, duration)
     }

@@ -16,13 +16,17 @@ final class KeywordDetector {
         let fingerprint: [Float]
     }
     
+    private let searchPadding: TimeInterval = 0.35
+    private let similarityThreshold: Float = 0.62
+    private let windowStrideDivisor = 5
+    private let queue = DispatchQueue(label: "KeywordDetector.queue")
+    
     private var variations: [CachedVariation] = []
     private var lastDetection: Date?
     private var debounceInterval: TimeInterval = 2.5
     private var sampleRate: Double = 44_100
     private var circularBuffer: [Float] = []
     private var maxSampleCount: Int = 0
-    private let queue = DispatchQueue(label: "KeywordDetector.queue")
     
     var onDetection: ((UUID, String) -> Void)?
     
@@ -31,11 +35,6 @@ final class KeywordDetector {
         if circularBuffer.count > maxSampleCount {
             circularBuffer.removeFirst(circularBuffer.count - maxSampleCount)
         }
-    }
-    
-    private func latestSamples(count: Int) -> [Float]? {
-        guard count > 0, circularBuffer.count >= count else { return nil }
-        return Array(circularBuffer.suffix(count))
     }
     
     private func canTriggerDetection() -> Bool {
@@ -65,7 +64,8 @@ final class KeywordDetector {
                 }
             
             let longestDuration = self.variations.map { $0.duration }.max() ?? 0
-            self.maxSampleCount = Int(longestDuration * sampleRate) + 1_024
+            let windowDuration = max(longestDuration + self.searchPadding, 0.5)
+            self.maxSampleCount = Int(windowDuration * sampleRate) + 1_024
             if self.maxSampleCount <= 0 { self.maxSampleCount = 1_024 }
             self.circularBuffer = []
             print("[KeywordDetector] configure: Cached \(self.variations.count) variations at sampleRate \(sampleRate)")
@@ -78,23 +78,39 @@ final class KeywordDetector {
             guard !self.variations.isEmpty else { return }
             
             self.appendSamples(samples)
+            let availableCount = self.circularBuffer.count
+            let searchCount = min(availableCount, self.maxSampleCount)
+            guard searchCount > 0 else { return }
+            
+            let startIndex = availableCount - searchCount
+            let searchBuffer = Array(self.circularBuffer[startIndex..<availableCount])
+            
             for variation in self.variations {
                 let sampleCount = max(1, Int(variation.duration * self.sampleRate))
-                guard let window = self.latestSamples(count: sampleCount) else { continue }
+                guard searchBuffer.count >= sampleCount else { continue }
                 
-                let fingerprint = AudioFingerprint.generateFingerprint(from: window)
-                guard fingerprint.count == variation.fingerprint.count else { continue }
+                let strideLength = max(1, sampleCount / self.windowStrideDivisor)
+                var offset = 0
                 
-                let similarity = AudioFingerprint.similarity(between: fingerprint, and: variation.fingerprint)
-                if similarity >= 0.78, self.canTriggerDetection() {
-                    self.lastDetection = Date()
-                    
-                    DispatchQueue.main.async {
-                        self.onDetection?(variation.keywordID, variation.keywordName)
+                while offset + sampleCount <= searchBuffer.count {
+                    let window = Array(searchBuffer[offset..<(offset + sampleCount)])
+                    let fingerprint = AudioFingerprint.generateFingerprint(from: window)
+                    guard fingerprint.count == variation.fingerprint.count else {
+                        offset += strideLength
+                        continue
                     }
-                    print("[KeywordDetector] process: Detected keyword \(variation.keywordName) with similarity \(similarity)")
                     
-                    break
+                    let similarity = AudioFingerprint.similarity(between: fingerprint, and: variation.fingerprint)
+                    if similarity >= self.similarityThreshold, self.canTriggerDetection() {
+                        self.lastDetection = Date()
+                        DispatchQueue.main.async {
+                            self.onDetection?(variation.keywordID, variation.keywordName)
+                        }
+                        print("[KeywordDetector] process: Detected keyword \(variation.keywordName) with similarity \(similarity)")
+                        return
+                    }
+                    
+                    offset += strideLength
                 }
             }
         }

@@ -5,12 +5,14 @@
 //  Created by Vasil Botsev on 29.09.25.
 //
 
-import Foundation
+import AVFoundation
+import Accelerate
 
 final class KeywordDetector {
     private struct CachedVariation {
         let sampleCount: Int
-        let fingerprint: [Float]
+        let template: [Float]
+        let minRMS: Float
     }
     
     private struct CachedKeyword {
@@ -19,14 +21,9 @@ final class KeywordDetector {
         let variations: [CachedVariation]
     }
     
-    private struct FingerprintCacheKey: Hashable {
-        let offset: Int
-        let length: Int
-    }
-    
     private let queue = DispatchQueue(label: "KeywordDetector.queue")
-    private let similarityThreshold: Float = 0.74
-    private let marginThreshold: Float = 0.08
+    private let similarityThreshold: Float = 0.68
+    private let marginThreshold: Float = 0.1
     private let minSignalLevel: Float = 0.015
     private let noiseBoost: Float = 2.4
     private let noiseLearningRate: Float = 0.04
@@ -91,16 +88,148 @@ final class KeywordDetector {
         lastKeywordDetections[keywordID] = now
     }
     
-    private func fingerprint(for buffer: [Float], offset: Int, length: Int, cache: inout [FingerprintCacheKey: [Float]]) -> [Float] {
-        let key = FingerprintCacheKey(offset: offset, length: length)
-        if let cached = cache[key] {
-            return cached
+    private func normalize(_ values: inout [Float]) -> Bool {
+        guard !values.isEmpty else { return false }
+        
+        var mean: Float = 0
+        vDSP_meanv(values, 1, &mean, vDSP_Length(values.count))
+        
+        var negativeMean = -mean
+        vDSP_vsadd(values, 1, &negativeMean, &values, 1, vDSP_Length(values.count))
+        
+        var variance: Float = 0
+        vDSP_measqv(values, 1, &variance, vDSP_Length(values.count))
+        variance = sqrtf(variance)
+        
+        guard variance > .ulpOfOne else { return false }
+        
+        var divisor = variance
+        vDSP_vsdiv(values, 1, &divisor, &values, 1, vDSP_Length(values.count))
+        return true
+    }
+    
+    private func trimSilence(from samples: [Float]) -> [Float] {
+        guard !samples.isEmpty else { return samples }
+        
+        let threshold: Float = 0.002
+        var start = 0
+        var end = samples.count - 1
+        
+        while start < end && abs(samples[start]) < threshold { start += 1 }
+        while end > start && abs(samples[end]) < threshold { end -= 1 }
+        
+        if end <= start { return samples }
+        return Array(samples[start...end])
+    }
+    
+    private func resample(_ samples: [Float], to targetCount: Int) -> [Float] {
+        guard !samples.isEmpty else { return [] }
+        guard targetCount > 0 else { return [] }
+        
+        if samples.count == targetCount { return samples }
+        if targetCount == 1 { return [samples.last ?? 0] }
+        
+        let inputCount = samples.count
+        let step = Float(inputCount - 1) / Float(targetCount - 1)
+        var position: Float = 0
+        var output = [Float](repeating: 0, count: targetCount)
+        
+        for index in 0..<targetCount {
+            let lower = min(Int(position), inputCount - 1)
+            let upper = min(lower + 1, inputCount - 1)
+            let fraction = position - Float(lower)
+            let lowerValue = samples[lower]
+            let upperValue = samples[upper]
+            output[index] = lowerValue + (upperValue - lowerValue) * fraction
+            position += step
         }
         
-        let window = Array(buffer[offset..<(offset + length)])
-        let fingerprint = AudioFingerprint.generateFingerprint(from: window)
-        cache[key] = fingerprint
-        return fingerprint
+        return output
+    }
+    
+    private func prepareVariation(_ variation: Variation, sampleRate: Double) -> CachedVariation? {
+        let url = KeywordStore.fileURL(for: variation.filePath)
+        let audioFile: AVAudioFile
+        
+        do {
+            audioFile = try AVAudioFile(forReading: url)
+        } catch {
+            print("[KeywordDetector][ERROR] prepareVariation: Failed to open file with error: \(error.localizedDescription)")
+            return nil
+        }
+        
+        let format = audioFile.processingFormat
+        let frameCapacity = AVAudioFrameCount(audioFile.length)
+        
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
+            print("[KeywordDetector][ERROR] prepareVariation: Unable to create PCM buffer")
+            return nil
+        }
+        
+        do {
+            try audioFile.read(into: buffer)
+        } catch {
+            print("[KeywordDetector][ERROR] prepareVariation: Failed to read audio with error: \(error.localizedDescription)")
+            return nil
+        }
+        
+        guard let channelData = buffer.floatChannelData else {
+            print("[KeywordDetector][ERROR] prepareVariation: Missing channel data")
+            return nil
+        }
+        
+        let channelCount = Int(format.channelCount)
+        guard channelCount > 0 else {
+            print("[KeywordDetector][ERROR] prepareVariation: Invalid channel count")
+            return nil
+        }
+        
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else {
+            print("[KeywordDetector][ERROR] prepareVariation: Empty buffer")
+            return nil
+        }
+        
+        var mono = [Float](repeating: 0, count: frameLength)
+
+        for frameIndex in 0..<frameLength {
+            var accumulator: Float = 0
+            for channel in 0..<channelCount {
+                let source = channelData[channel]
+                accumulator += source[frameIndex]
+            }
+            mono[frameIndex] = accumulator
+        }
+
+        if channelCount > 1 {
+            let divisor = Float(channelCount)
+            for index in 0..<frameLength {
+                mono[index] /= divisor
+            }
+        }
+
+        let trimmed = trimSilence(from: mono)
+        let safeDuration = max(variation.duration, 0.3)
+        let targetCount = max(1, Int(safeDuration * sampleRate))
+        let resampled = resample(trimmed, to: targetCount)
+        
+        guard !resampled.isEmpty else {
+            print("[KeywordDetector][ERROR] prepareVariation: Resampled data empty")
+            return nil
+        }
+        
+        var rms: Float = 0
+        vDSP_measqv(resampled, 1, &rms, vDSP_Length(resampled.count))
+        rms = sqrtf(rms)
+        
+        var template = resampled
+        guard normalize(&template) else {
+            print("[KeywordDetector][ERROR] prepareVariation: Normalization failed")
+            return nil
+        }
+        
+        let minimumRMS = max(minSignalLevel, rms * 0.45)
+        return CachedVariation(sampleCount: template.count, template: template, minRMS: minimumRMS)
     }
     
     func configure(keywords: [Keyword], sampleRate: Double) {
@@ -111,13 +240,9 @@ final class KeywordDetector {
             let enabled = keywords.filter { $0.isEnabled }
             self.keywords = enabled.compactMap { keyword -> CachedKeyword? in
                 let variations = keyword.variations.compactMap { variation -> CachedVariation? in
-                    guard !variation.fingerprint.isEmpty else { return nil }
-                    let safeDuration = max(variation.duration, 0.3)
-                    let sampleCount = max(1, Int(safeDuration * sampleRate))
-                    return CachedVariation(sampleCount: sampleCount, fingerprint: variation.fingerprint)
+                    return self.prepareVariation(variation, sampleRate: sampleRate)
                 }
                 guard !variations.isEmpty else { return nil }
-                
                 return CachedKeyword(id: keyword.id, name: keyword.name, variations: variations)
             }
             
@@ -158,7 +283,6 @@ final class KeywordDetector {
             let searchBuffer = Array(self.circularBuffer[startIndex..<availableCount])
             guard !searchBuffer.isEmpty else { return }
             
-            var cache: [FingerprintCacheKey: [Float]] = [:]
             var bestKeyword: CachedKeyword?
             var bestScore: Float = 0
             var runnerUp: Float = 0
@@ -172,21 +296,43 @@ final class KeywordDetector {
                     
                     let stride = max(1, sampleCount / self.strideDivisor)
                     let latestStart = max(0, searchBuffer.count - sampleCount * self.retentionMultiplier)
-                    var offset = min(latestStart, searchBuffer.count - sampleCount)
+                    let startOffset = min(latestStart, searchBuffer.count - sampleCount)
+                    var windowBuffer = [Float](repeating: 0, count: sampleCount)
                     
-                    while offset + sampleCount <= searchBuffer.count {
-                        let fingerprint = self.fingerprint(for: searchBuffer, offset: offset, length: sampleCount, cache: &cache)
-                        guard fingerprint.count == variation.fingerprint.count else {
+                    searchBuffer.withUnsafeBufferPointer { pointer in
+                        guard let base = pointer.baseAddress else { return }
+                        var offset = startOffset
+                        
+                        while offset + sampleCount <= searchBuffer.count {
+                            windowBuffer.withUnsafeMutableBufferPointer { destination in
+                                guard let dest = destination.baseAddress else { return }
+                                let source = base + offset
+                                dest.update(from: source, count: sampleCount)
+                            }
+                            
+                            var rms: Float = 0
+                            vDSP_measqv(windowBuffer, 1, &rms, vDSP_Length(sampleCount))
+                            rms = sqrtf(rms)
+                            
+                            if rms < variation.minRMS {
+                                offset += stride
+                                continue
+                            }
+                            
+                            if !self.normalize(&windowBuffer) {
+                                offset += stride
+                                continue
+                            }
+                            
+                            var similarity: Float = 0
+                            vDSP_dotpr(windowBuffer, 1, variation.template, 1, &similarity, vDSP_Length(sampleCount))
+                            similarity /= Float(sampleCount)
+                            
+                            if similarity > keywordBest {
+                                keywordBest = similarity
+                            }
                             offset += stride
-                            continue
                         }
-                        
-                        let similarity = AudioFingerprint.similarity(between: fingerprint, and: variation.fingerprint)
-                        if similarity > keywordBest {
-                            keywordBest = similarity
-                        }
-                        
-                        offset += stride
                     }
                 }
                 guard keywordBest > 0 else { continue }

@@ -22,7 +22,6 @@ final class AudioManager {
     private var currentKeywords: [UUID: Keyword] = [:]
     private var currentSampleRate: Double = 44_100
     
-    var onAudioLevel: ((Float) -> Void)?
     var onKeywordDetected: ((Keyword) -> Void)?
     var running: Bool { controlQueue.sync { isRunning } }
     
@@ -107,7 +106,6 @@ final class AudioManager {
                     let samples = Array(UnsafeBufferPointer(start: data, count: frameLength))
                     self.detector.process(samples: samples, level: rms)
                 }
-                self.onAudioLevel?(rms)
             }
             
             self.engine.prepare()

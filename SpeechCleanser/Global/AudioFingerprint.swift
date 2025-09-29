@@ -133,16 +133,4 @@ struct AudioFingerprint {
         
         return normalize(fingerprint)
     }
-    
-    static func similarity(between lhs: [Float], and rhs: [Float]) -> Float {
-        guard lhs.count == rhs.count, !lhs.isEmpty else { return 0 }
-        
-        let normalizedLHS = normalize(lhs)
-        let normalizedRHS = normalize(rhs)
-        
-        var dot: Float = 0
-        vDSP_dotpr(normalizedLHS, 1, normalizedRHS, 1, &dot, vDSP_Length(lhs.count))
-        
-        return max(-1, min(1, dot / Float(lhs.count)))
-    }
 }

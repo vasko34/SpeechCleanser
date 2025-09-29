@@ -11,7 +11,6 @@ import AVFoundation
 class ViewController: UIViewController {
     private let toggleButton = UIButton(type: .system)
     private let manageWordsButton = UIButton(type: .system)
-    private let levelLabel = UILabel()
     private let pavlokConfigButton = UIButton(type: .system)
     private let pavlokStatusLabel = UILabel()
     
@@ -29,10 +28,6 @@ class ViewController: UIViewController {
         manageWordsButton.addTarget(self, action: #selector(openKeywordsTableViewController), for: .touchUpInside)
         manageWordsButton.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
         
-        levelLabel.text = "Level: —"
-        levelLabel.textAlignment = .center
-        levelLabel.textColor = .secondaryLabel
-        
         pavlokConfigButton.setTitle("Configure Pavlok", for: .normal)
         pavlokConfigButton.addTarget(self, action: #selector(configurePavlok), for: .touchUpInside)
         pavlokConfigButton.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
@@ -42,7 +37,7 @@ class ViewController: UIViewController {
         pavlokStatusLabel.font = .systemFont(ofSize: 15, weight: .regular)
         updatePavlokStatus()
 
-        [toggleButton, manageWordsButton, pavlokConfigButton, pavlokStatusLabel, levelLabel].forEach {
+        [toggleButton, manageWordsButton, pavlokConfigButton, pavlokStatusLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview($0)
         }
@@ -62,18 +57,8 @@ class ViewController: UIViewController {
 
             pavlokStatusLabel.topAnchor.constraint(equalTo: pavlokConfigButton.bottomAnchor, constant: 8),
             pavlokStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            pavlokStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-
-            levelLabel.topAnchor.constraint(equalTo: pavlokStatusLabel.bottomAnchor, constant: 12),
-            levelLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            levelLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24)
+            pavlokStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24)
         ])
-        
-        AudioManager.shared.onAudioLevel = { [weak self] level in
-            DispatchQueue.main.async {
-                self?.levelLabel.text = String(format: "Level: %.3f", level)
-            }
-        }
         
         print("[ViewController] viewDidLoad: UI configured")
     }

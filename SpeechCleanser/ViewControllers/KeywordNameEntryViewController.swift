@@ -54,12 +54,8 @@ class KeywordNameEntryViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            
-            if self.textField.becomeFirstResponder() {
-                print("[KeywordNameEntryViewController] viewDidAppear: Activated text field")
-            }
+        if textField.window != nil && textField.becomeFirstResponder() {
+            print("[KeywordNameEntryViewController] viewDidAppear: Activated text field")
         }
     }
     

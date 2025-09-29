@@ -42,12 +42,8 @@ class VariationsTableViewController: UITableViewController {
     private func reloadKeyword() {
         let all = KeywordStore.shared.load()
         self.keyword = all.first(where: { $0.id == keywordID })
-        
-        if let name = keyword?.name {
-            self.title = keyword?.name
-        }
-        
-        tableView.reloadData()
+        self.title = keyword?.name
+        self.tableView.reloadData()
     }
     
     private func beginRecordingFlow() {

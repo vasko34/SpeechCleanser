@@ -57,13 +57,13 @@ final class PavlokService {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
         } catch {
-            print("PavlokService JSON encoding error:", error)
+            print("PavlokService JSON encoding error: \(error.localizedDescription)")
             return
         }
         
         URLSession.shared.dataTask(with: request) { _, response, error in
             if let error = error {
-                print("PavlokService request error:", error)
+                print("PavlokService request error: \(error.localizedDescription)")
                 return
             }
 

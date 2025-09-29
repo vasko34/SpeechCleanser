@@ -106,7 +106,7 @@ class VariationsTableViewController: UITableViewController {
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
-            print("Failed to deactivate recording session:", error)
+            print("Failed to deactivate recording session with error: \(error.localizedDescription)")
         }
         
         guard let url = fileURL else { return }

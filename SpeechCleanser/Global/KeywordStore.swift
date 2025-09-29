@@ -30,7 +30,7 @@ final class KeywordStore {
         do {
             return try decoder.decode([Keyword].self, from: data)
         } catch {
-            print("KeywordStore load error:", error)
+            print("KeywordStore load error: \(error.localizedDescription)")
             return []
         }
     }
@@ -40,7 +40,7 @@ final class KeywordStore {
             let data = try encoder.encode(keywords)
             userDefaults.set(data, forKey: defaultsKey)
         } catch {
-            print("KeywordStore save error:", error)
+            print("KeywordStore save error: \(error.localizedDescription)")
         }
     }
 }

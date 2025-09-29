@@ -11,7 +11,7 @@ enum NotificationManager {
     static func requestAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error = error {
-                print("Notification authorization error:", error)
+                print("Notification authorization error: \(error.localizedDescription)")
             } else {
                 print("Notifications granted: \(granted)")
             }
@@ -32,7 +32,7 @@ enum NotificationManager {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("Notification scheduling error:", error)
+                print("Notification scheduling error: \(error.localizedDescription)")
             }
         }
     }

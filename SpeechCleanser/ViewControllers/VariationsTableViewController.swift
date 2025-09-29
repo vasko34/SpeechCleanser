@@ -9,6 +9,7 @@ import UIKit
 import AVFoundation
 
 class VariationsTableViewController: UITableViewController {
+    private let persistenceQueue = DispatchQueue(label: "VariationsTableViewController.persistence", qos: .userInitiated)
     private let keywordID: UUID
     private var player: AVAudioPlayer?
     private var recorder: AVAudioRecorder?
@@ -137,7 +138,7 @@ class VariationsTableViewController: UITableViewController {
         
         guard let url = fileURL else { return }
         
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        persistenceQueue.async { [weak self] in
             var list = KeywordStore.shared.load()
             guard let self = self else { return }
             guard let idx = list.firstIndex(where: { $0.id == self.keywordID }) else {
@@ -154,13 +155,16 @@ class VariationsTableViewController: UITableViewController {
             kword.variations.append(variation)
             list[idx] = kword
             KeywordStore.shared.save(list)
+            AudioManager.shared.reloadKeywords(list)
             
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                
                 self.keyword = kword
                 self.tableView.reloadData()
-                AudioManager.shared.reloadKeywords()
                 print("[VariationsTableViewController] finishRecording: Saved new variation for keyword \(kword.name)")
             }
+            print("[VariationsTableViewController] finishRecording: Persisted variation for keyword \(kword.name)")
         }
         
         if resumeListeningAfterRecording {
@@ -241,27 +245,31 @@ class VariationsTableViewController: UITableViewController {
         guard editingStyle == .delete else { return }
         guard var keyword = keyword else { return }
         
-        let variation = keyword.variations[indexPath.row]
-        let fileURL = KeywordStore.fileURL(for: variation.filePath)
+        let removedVariation = keyword.variations.remove(at: indexPath.row)
+        let updatedKeyword = keyword
         
-        do {
-            try FileManager.default.removeItem(at: fileURL)
-            print("[VariationsTableViewController] commitForRowAt: Removed file \(variation.filePath)")
-        } catch {
-            print("[VariationsTableViewController][ERROR] commitForRowAt: FileManager failed to remove item with error: \(error.localizedDescription)")
-        }
-        
-        keyword.variations.remove(at: indexPath.row)
-        var list = KeywordStore.shared.load()
-        if let index = list.firstIndex(where: { $0.id == keywordID }) {
-            list[index] = keyword
-            KeywordStore.shared.save(list)
-        }
-        
-        self.keyword = keyword
+        self.keyword = updatedKeyword
         tableView.deleteRows(at: [indexPath], with: .automatic)
-        AudioManager.shared.reloadKeywords()
         print("[VariationsTableViewController] commitForRowAt: Deleted variation at index \(indexPath.row)")
+        
+        persistenceQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            let fileURL = KeywordStore.fileURL(for: removedVariation.filePath)
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+                print("[VariationsTableViewController] commitForRowAt: Removed file \(removedVariation.filePath)")
+            } catch {
+                print("[VariationsTableViewController][ERROR] commitForRowAt: FileManager failed to remove item with error: \(error.localizedDescription)")
+            }
+            
+            var list = KeywordStore.shared.load()
+            if let index = list.firstIndex(where: { $0.id == self.keywordID }) {
+                list[index] = updatedKeyword
+                KeywordStore.shared.save(list)
+                AudioManager.shared.reloadKeywords(list)
+            }
+        }
     }
 }
 

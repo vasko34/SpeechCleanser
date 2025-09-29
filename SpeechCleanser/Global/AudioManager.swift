@@ -5,7 +5,6 @@
 //  Created by Vasil Botsev on 29.09.25.
 //
 
-import UIKit
 import AVFoundation
 import Accelerate
 
@@ -22,7 +21,6 @@ final class AudioManager {
     private var isStarting = false
     private var currentKeywords: [UUID: Keyword] = [:]
     private var currentSampleRate: Double = 44_100
-    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     
     var onAudioLevel: ((Float) -> Void)?
     var onKeywordDetected: ((Keyword) -> Void)?
@@ -45,34 +43,14 @@ final class AudioManager {
         keywordQueue.sync { currentKeywords[id] }
     }
     
-    private func beginBackgroundTask() {
-        DispatchQueue.main.async { [weak self] in
-            guard self?.backgroundTask == .invalid else { return }
-            
-            self?.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "AudioDetection") {
-                self?.endBackgroundTask()
-            }
-            
-            if let task = self?.backgroundTask {
-                print("[AudioManager] beginBackgroundTask: Started task \(task.rawValue)")
-            }
+    func reloadKeywords(_ overrideKeywords: [Keyword]? = nil, sampleRate overrideRate: Double? = nil) {
+        let keywords: [Keyword]
+        if let overrideKeywords = overrideKeywords {
+            keywords = overrideKeywords
+        } else {
+            keywords = KeywordStore.shared.load()
         }
-    }
-    
-    private func endBackgroundTask() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            if self.backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(self.backgroundTask)
-                print("[AudioManager] endBackgroundTask: Ended task \(self.backgroundTask.rawValue)")
-                self.backgroundTask = .invalid
-            }
-        }
-    }
-    
-    func reloadKeywords(sampleRate overrideRate: Double? = nil) {
-        let keywords = KeywordStore.shared.load()
+        
         let resolvedSampleRate: Double
         
         if let overrideRate = overrideRate {
@@ -127,7 +105,7 @@ final class AudioManager {
                     rms = sqrtf(sum)
                     
                     let samples = Array(UnsafeBufferPointer(start: data, count: frameLength))
-                    self.detector.process(samples: samples)
+                    self.detector.process(samples: samples, level: rms)
                 }
                 self.onAudioLevel?(rms)
             }
@@ -136,8 +114,7 @@ final class AudioManager {
             do {
                 try self.engine.start()
                 self.isRunning = true
-                DispatchQueue.main.async { [weak self] in
-                    self?.beginBackgroundTask()
+                DispatchQueue.main.async {
                     print("[AudioManager] start: Engine started")
                 }
             } catch {
@@ -168,8 +145,7 @@ final class AudioManager {
             
             self.isRunning = false
             self.isStarting = false
-            DispatchQueue.main.async { [weak self] in
-                self?.endBackgroundTask()
+            DispatchQueue.main.async {
                 print("[AudioManager] stop: Engine stopped")
             }
         }

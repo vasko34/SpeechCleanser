@@ -12,7 +12,9 @@ import UserNotifications
 class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        NotificationManager.requestAuthorization()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            NotificationManager.requestAuthorization()
+        }
         
         AudioManager.shared.onKeywordDetected = { keyword in
             NotificationManager.sendDetectionNotification(for: keyword)

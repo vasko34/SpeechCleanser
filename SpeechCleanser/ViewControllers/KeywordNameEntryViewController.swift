@@ -11,6 +11,10 @@ class KeywordNameEntryViewController: UIViewController {
     private let textField = UITextField()
     private let descriptionLabel = UILabel()
     
+    private var backgroundObserver: NSObjectProtocol?
+    private var foregroundObserver: NSObjectProtocol?
+    private var didActivateKeyboard = false
+    
     var onSave: ((String) -> Void)?
     
     override func viewDidLoad() {
@@ -45,20 +49,20 @@ class KeywordNameEntryViewController: UIViewController {
             textField.heightAnchor.constraint(equalToConstant: 44)
         ])
         
+        backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleWillResignActive()
+        }
+        
+        foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.activateKeyboardIfNeeded()
+        }
+        
         print("[KeywordNameEntryViewController] viewDidLoad: Ready for input")
     }
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            if !self.textField.isFirstResponder {
-                self.textField.becomeFirstResponder()
-                print("[KeywordNameEntryViewController] viewDidAppear: Activated text field")
-            }
-        }
+        activateKeyboardIfNeeded()
     }
     
     override func viewWillDisappear(_ animated: Bool) {
@@ -67,6 +71,35 @@ class KeywordNameEntryViewController: UIViewController {
             textField.resignFirstResponder()
             print("[KeywordNameEntryViewController] viewWillDisappear: Resigned text field")
         }
+        didActivateKeyboard = false
+    }
+    
+    deinit {
+        if let observer = backgroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        
+        if let observer = foregroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+    
+    private func activateKeyboardIfNeeded() {
+        guard !didActivateKeyboard, view.window != nil else { return }
+        
+        if !textField.isFirstResponder {
+            didActivateKeyboard = true
+            textField.becomeFirstResponder()
+            print("[KeywordNameEntryViewController] activateKeyboardIfNeeded: Activated text field")
+        }
+    }
+    
+    @objc private func handleWillResignActive() {
+        if textField.isFirstResponder {
+            textField.resignFirstResponder()
+            print("[KeywordNameEntryViewController] handleWillResignActive: Resigned text field")
+        }
+        didActivateKeyboard = false
     }
     
     @objc private func cancelTapped() {

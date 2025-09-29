@@ -13,6 +13,7 @@ class PavlokSettingsViewController: UIViewController {
     private let infoLabel = UILabel()
     private let initialAPIKey: String?
     private let initialIntensity: Int
+    private var backgroundObserver: NSObjectProtocol?
     
     var onSave: ((String?, Int) -> Void)?
     
@@ -67,7 +68,18 @@ class PavlokSettingsViewController: UIViewController {
             intensityField.heightAnchor.constraint(equalToConstant: 44)
         ])
         
+        backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.view.endEditing(true)
+            print("[PavlokSettingsViewController] viewDidLoad: Ended editing")
+        }
+        
         print("[PavlokSettingsViewController] viewDidLoad: Loaded with API key present=\(initialAPIKey?.isEmpty == false)")
+    }
+    
+    deinit {
+        if let observer = backgroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     @objc private func cancelTapped() {

@@ -24,11 +24,13 @@ class KeywordCell: UITableViewCell {
         
         NSLayoutConstraint.activate([
             nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
-            nameLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -12),
+            nameLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -8),
+            nameLabel.topAnchor.constraint(greaterThanOrEqualTo: contentView.topAnchor, constant: 8),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
+            nameLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
         ])
         
+        nameLabel.setContentCompressionResistancePriority(.required, for: .vertical)
         toggle.addTarget(self, action: #selector(switched), for: .valueChanged)
         selectionStyle = .default
     }

@@ -45,16 +45,39 @@ class KeywordNameEntryViewController: UIViewController {
             textField.heightAnchor.constraint(equalToConstant: 44)
         ])
         
-        textField.becomeFirstResponder()
         print("[KeywordNameEntryViewController] viewDidLoad: Ready for input")
     }
-
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !textField.isFirstResponder {
+            textField.becomeFirstResponder()
+            print("[KeywordNameEntryViewController] viewDidAppear: Activated text field")
+        }
+    }
+    
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if textField.isFirstResponder {
+            textField.resignFirstResponder()
+            print("[KeywordNameEntryViewController] viewWillDisappear: Resigned text field")
+        }
+    }
+    
     @objc private func cancelTapped() {
+        if textField.isFirstResponder {
+            textField.resignFirstResponder()
+        }
+        
         print("[KeywordNameEntryViewController] cancelTapped: Dismissing without saving")
         dismiss(animated: true)
     }
-
+    
     @objc private func saveTapped() {
+        if textField.isFirstResponder {
+            textField.resignFirstResponder()
+        }
+        
         let name = textField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !name.isEmpty else {
             print("[KeywordNameEntryViewController][ERROR] saveTapped: Attempted to save empty keyword")

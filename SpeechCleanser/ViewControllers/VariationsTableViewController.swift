@@ -51,50 +51,69 @@ class VariationsTableViewController: UITableViewController {
     }
     
     private func beginRecordingFlow() {
-        resumeListeningAfterRecording = AudioManager.shared.running
-        if resumeListeningAfterRecording {
-            AudioManager.shared.stop()
-        }
+        let shouldResume = AudioManager.shared.running
+        resumeListeningAfterRecording = shouldResume
         
-        do {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            if shouldResume {
+                AudioManager.shared.stop()
+            }
+            
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .default, options: [])
-            try session.setActive(true)
-        } catch {
-            showAlert(title: "Audio Error", message: error.localizedDescription)
-            print("[VariationsTableViewController][ERROR] beginRecordingFlow: Unable to start recording session with error: \(error.localizedDescription)")
-            return
-        }
-        
-        let filename = "variation_\(UUID().uuidString).m4a"
-        let url = KeywordStore.fileURL(for: filename)
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 16000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
-        
-        do {
-            let rec = try AVAudioRecorder(url: url, settings: settings)
-            rec.prepareToRecord()
-            rec.isMeteringEnabled = true
-            rec.record()
-            self.recorder = rec
-            self.recordStart = Date()
-            self.recordURL = url
+            do {
+                try session.setCategory(.record, mode: .default, options: [])
+                try session.setActive(true)
+            } catch {
+                DispatchQueue.main.async {
+                    if shouldResume {
+                        AudioManager.shared.start()
+                    }
+                    self.showAlert(title: "Audio Error", message: error.localizedDescription)
+                    print("[VariationsTableViewController][ERROR] beginRecordingFlow: Unable to start recording session with error: \(error.localizedDescription)")
+                }
+                return
+            }
             
-            print("[VariationsTableViewController] beginRecordingFlow: Recording to \(url.lastPathComponent)")
-            let alert = UIAlertController(title: "Recording…", message: "Speak your variation and tap Stop.", preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "Stop", style: .destructive, handler: { [weak self] _ in
-                self?.finishRecording()
-            }))
+            let filename = "variation_\(UUID().uuidString).m4a"
+            let url = KeywordStore.fileURL(for: filename)
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 16000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ]
             
-            self.recordAlert = alert
-            self.present(alert, animated: true)
-        } catch {
-            showAlert(title: "Record Error", message: error.localizedDescription)
-            print("[VariationsTableViewController][ERROR] beginRecordingFlow: Failed to begin recording with error: \(error.localizedDescription)")
+            do {
+                let recorder = try AVAudioRecorder(url: url, settings: settings)
+                recorder.prepareToRecord()
+                recorder.isMeteringEnabled = true
+                recorder.record()
+                
+                DispatchQueue.main.async {
+                    self.recorder = recorder
+                    self.recordStart = Date()
+                    self.recordURL = url
+                    
+                    print("[VariationsTableViewController] beginRecordingFlow: Recording to \(url.lastPathComponent)")
+                    let alert = UIAlertController(title: "Recording…", message: "Speak your variation and tap Stop.", preferredStyle: .alert)
+                    alert.addAction(UIAlertAction(title: "Stop", style: .destructive, handler: { [weak self] _ in
+                        self?.finishRecording()
+                    }))
+                    
+                    self.recordAlert = alert
+                    self.present(alert, animated: true)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    if shouldResume {
+                        AudioManager.shared.start()
+                    }
+                    self.showAlert(title: "Record Error", message: error.localizedDescription)
+                    print("[VariationsTableViewController][ERROR] beginRecordingFlow: Failed to begin recording with error: \(error.localizedDescription)")
+                }
+            }
         }
     }
     

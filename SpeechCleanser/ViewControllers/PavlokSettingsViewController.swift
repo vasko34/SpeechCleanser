@@ -71,11 +71,14 @@ class PavlokSettingsViewController: UIViewController {
     }
     
     @objc private func cancelTapped() {
+        view.endEditing(true)
         print("[PavlokSettingsViewController] cancelTapped: Dismissing without saving")
         dismiss(animated: true)
     }
     
     @objc private func saveTapped() {
+        view.endEditing(true)
+        
         let trimmedToken = apiKeyField.text?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawIntensity = intensityField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let value = Int(rawIntensity) ?? initialIntensity

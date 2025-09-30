@@ -11,10 +11,6 @@ class ContextAwareTextField: UITextField {
     private let contextID = UUID().uuidString
     private var lastResponderLog: Bool = false
     
-    override var textInputContextIdentifier: String? {
-        contextID
-    }
-    
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
         if result {

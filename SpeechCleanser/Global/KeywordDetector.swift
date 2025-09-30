@@ -42,6 +42,7 @@ final class KeywordDetector {
     private var lastGlobalDetection: Date?
     private var lastKeywordDetections: [UUID: Date] = [:]
     private var lastLoggedNoise: Float = 0
+    private var lastLevelGateLog: Date?
     
     var onDetection: ((UUID, String) -> Void)?
     
@@ -237,6 +238,10 @@ final class KeywordDetector {
         }
         
         let minimumRMS = max(minSignalLevel, rms * 0.45)
+        let formattedDuration = String(format: "%.3f", safeDuration)
+        let formattedRMS = String(format: "%.4f", minimumRMS)
+        print("[KeywordDetector] prepareVariation: Prepared variation \(variation.id.uuidString) duration=\(formattedDuration)s samples=\(template.count) minRMS=\(formattedRMS)")
+        
         return CachedVariation(sampleCount: template.count, template: template, minRMS: minimumRMS)
     }
     
@@ -250,7 +255,20 @@ final class KeywordDetector {
                 let variations = keyword.variations.compactMap { variation -> CachedVariation? in
                     return self.prepareVariation(variation, sampleRate: sampleRate)
                 }
-                guard !variations.isEmpty else { return nil }
+                guard !variations.isEmpty else {
+                    print("[KeywordDetector][ERROR] configure: Skipped keyword \(keyword.name) due to missing valid variations")
+                    return nil
+                }
+                
+                let sampleCounts = variations.map { $0.sampleCount }
+                let minSample = sampleCounts.min() ?? 0
+                let maxSample = sampleCounts.max() ?? 0
+                let minRMS = variations.map { $0.minRMS }.min() ?? 0
+                let maxRMS = variations.map { $0.minRMS }.max() ?? 0
+                let formattedMinRMS = String(format: "%.4f", minRMS)
+                let formattedMaxRMS = String(format: "%.4f", maxRMS)
+                print("[KeywordDetector] configure: Keyword \(keyword.name) cachedVariations=\(variations.count) sampleRange=\(minSample)-\(maxSample) minRMSRange=\(formattedMinRMS)-\(formattedMaxRMS)")
+                
                 return CachedKeyword(id: keyword.id, name: keyword.name, variations: variations)
             }
             
@@ -266,6 +284,7 @@ final class KeywordDetector {
             self.noiseFloor = 0
             self.lastGlobalDetection = nil
             self.lastKeywordDetections.removeAll(keepingCapacity: true)
+            self.lastLevelGateLog = nil
             
             let variationCount = self.keywords.reduce(0) { $0 + $1.variations.count }
             print("[KeywordDetector] configure: Cached \(variationCount) variations at sampleRate \(sampleRate)")
@@ -281,7 +300,21 @@ final class KeywordDetector {
             self.updateNoise(with: clampedLevel)
             self.appendSamples(samples)
             let triggerLevel = self.currentThreshold()
-            guard clampedLevel >= triggerLevel else { return }
+            if clampedLevel < triggerLevel {
+                let now = Date()
+                if let last = self.lastLevelGateLog {
+                    if now.timeIntervalSince(last) > 2 {
+                        self.lastLevelGateLog = now
+                        print("[KeywordDetector][ERROR] process: Skipped frame due to level=\(clampedLevel) threshold=\(triggerLevel)")
+                    }
+                } else {
+                    self.lastLevelGateLog = now
+                    print("[KeywordDetector][ERROR] process: Skipped frame due to level=\(clampedLevel) threshold=\(triggerLevel)")
+                }
+                
+                return
+            }
+            self.lastLevelGateLog = nil
             
             let availableCount = self.circularBuffer.count
             guard availableCount > 0 else { return }

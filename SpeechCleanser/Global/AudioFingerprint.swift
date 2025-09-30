@@ -98,6 +98,15 @@ struct AudioFingerprint {
         let fingerprint = generateFingerprint(from: monoSamples, segments: segmentCount)
         let duration = TimeInterval(Double(frameLength) / floatFormat.sampleRate)
         
+        if !fingerprint.isEmpty {
+            let minValue = fingerprint.min() ?? 0
+            let maxValue = fingerprint.max() ?? 0
+            let formattedDuration = String(format: "%.3f", duration)
+            let formattedMin = String(format: "%.4f", minValue)
+            let formattedMax = String(format: "%.4f", maxValue)
+            print("[AudioFingerprint] fromFile: Generated fingerprint segments=\(fingerprint.count) duration=\(formattedDuration)s rmsRange=\(formattedMin)-\(formattedMax)")
+        }
+        
         return (fingerprint, duration)
     }
     
@@ -131,6 +140,10 @@ struct AudioFingerprint {
             fingerprint.append(contentsOf: Array(repeating: last, count: segments - fingerprint.count))
         }
         
-        return normalize(fingerprint)
+        let normalized = normalize(fingerprint)
+        let filledSegments = normalized.count
+        print("[AudioFingerprint] generateFingerprint: Processed samples=\(samples.count) segments=\(filledSegments) segmentLength=\(segmentLength)")
+        
+        return normalized
     }
 }

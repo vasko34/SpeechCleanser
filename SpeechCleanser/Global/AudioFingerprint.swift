@@ -82,6 +82,9 @@ struct AudioFingerprint {
             return ([], 0)
         }
         
+        let formattedRate = String(format: "%.1f", floatFormat.sampleRate)
+        print("[AudioFingerprint] fromFile: Loaded frames=\(frameLength) sampleRate=\(formattedRate)Hz channels=\(channelCount)")
+        
         let channels = UnsafeBufferPointer(start: floatPointers, count: channelCount)
         var monoSamples: [Float] = []
         if channelCount == 1, let firstPointer = channels.first {
@@ -127,6 +130,8 @@ struct AudioFingerprint {
             print("[AudioFingerprint][ERROR] generateFingerprint: Empty samples input")
             return []
         }
+        
+        print("[AudioFingerprint] generateFingerprint: Starting samples=\(samples.count) segments=\(segments)")
         
         let totalSamples = samples.count
         let segmentLength = max(1, totalSamples / segments)

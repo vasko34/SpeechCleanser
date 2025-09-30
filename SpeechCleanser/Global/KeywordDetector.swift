@@ -291,6 +291,9 @@ final class KeywordDetector {
             
             self.sampleRate = sampleRate
             let enabled = keywords.filter { $0.isEnabled }
+            let disabledCount = keywords.count - enabled.count
+            print("[KeywordDetector] configure: Received totalKeywords=\(keywords.count) enabled=\(enabled.count) disabled=\(max(disabledCount, 0)) sampleRate=\(sampleRate)")
+            
             self.keywords = enabled.compactMap { keyword -> CachedKeyword? in
                 let variations = keyword.variations.compactMap { variation -> CachedVariation? in
                     return self.prepareVariation(variation, sampleRate: sampleRate)
@@ -330,7 +333,8 @@ final class KeywordDetector {
             self.didLogEmptyKeywords = false
             
             let variationCount = self.keywords.reduce(0) { $0 + $1.variations.count }
-            print("[KeywordDetector] configure: Cached \(variationCount) variations at sampleRate \(sampleRate)")
+            let formattedWindow = String(format: "%.3f", windowDuration)
+            print("[KeywordDetector] configure: Cached \(variationCount) variations window=\(formattedWindow)s maxSamples=\(self.maxSampleCount)")
         }
     }
     
@@ -460,12 +464,13 @@ final class KeywordDetector {
             if shouldLogAnalysis, !keywordDiagnostics.isEmpty {
                 let formattedLevel = String(format: "%.4f", clampedLevel)
                 let formattedThreshold = String(format: "%.4f", triggerLevel)
+                let formattedNoise = String(format: "%.4f", self.noiseFloor)
                 let limitedDiagnostics = keywordDiagnostics.prefix(3).map { detail -> String in
                     let formattedScore = String(format: "%.3f", detail.1)
                     return "\(detail.0){score=\(formattedScore) windows=\(detail.2) rmsRejects=\(detail.3) normRejects=\(detail.4) insufficient=\(detail.5)}"
                 }.joined(separator: ", ")
                 
-                print("[KeywordDetector] process: Analysis keywords=\(keywordDiagnostics.count) bufferSamples=\(searchCount) level=\(formattedLevel) threshold=\(formattedThreshold) details=[\(limitedDiagnostics)]")
+                print("[KeywordDetector] process: Analysis keywords=\(keywordDiagnostics.count) bufferSamples=\(searchCount) level=\(formattedLevel) threshold=\(formattedThreshold) noise=\(formattedNoise) details=[\(limitedDiagnostics)]")
                 self.lastAnalysisLog = now
             }
             
@@ -497,7 +502,12 @@ final class KeywordDetector {
                 self.onDetection?(candidate.id, candidate.name)
             }
             
-            print("[KeywordDetector] process: Detected keyword \(candidate.name) with similarity \(bestScore)")
+            let formattedScore = String(format: "%.3f", bestScore)
+            let formattedMargin = String(format: "%.3f", margin)
+            let formattedLevel = String(format: "%.4f", clampedLevel)
+            let formattedThreshold = String(format: "%.4f", triggerLevel)
+            let formattedNoise = String(format: "%.4f", self.noiseFloor)
+            print("[KeywordDetector] process: Detected keyword \(candidate.name) score=\(formattedScore) margin=\(formattedMargin) level=\(formattedLevel) threshold=\(formattedThreshold) noise=\(formattedNoise) bufferSamples=\(searchCount)")
         }
     }
 }

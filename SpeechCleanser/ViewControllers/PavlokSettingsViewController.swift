@@ -8,8 +8,8 @@
 import UIKit
 
 class PavlokSettingsViewController: UIViewController {
-    private let apiKeyField = ContextAwareTextField()
-    private let intensityField = ContextAwareTextField()
+    private let apiKeyField = UITextField()
+    private let intensityField = UITextField()
     private let infoLabel = UILabel()
     private let initialAPIKey: String?
     private let initialIntensity: Int

@@ -8,7 +8,7 @@
 import UIKit
 
 class KeywordNameEntryViewController: UIViewController {
-    private let textField = ContextAwareTextField()
+    private let textField = UITextField()
     private let descriptionLabel = UILabel()
     
     var onSave: ((String) -> Void)?

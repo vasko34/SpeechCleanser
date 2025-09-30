@@ -8,7 +8,7 @@
 import UIKit
 
 class KeywordNameEntryViewController: UIViewController {
-    private let textField = UITextField()
+    private let textField = ContextAwareTextField()
     private let descriptionLabel = UILabel()
     
     var onSave: ((String) -> Void)?
@@ -32,6 +32,8 @@ class KeywordNameEntryViewController: UIViewController {
         textField.autocorrectionType = .no
         textField.spellCheckingType = .no
         textField.returnKeyType = .done
+        textField.delegate = self
+        textField.enablesReturnKeyAutomatically = true
         textField.translatesAutoresizingMaskIntoConstraints = false
         
         view.addSubview(descriptionLabel)
@@ -53,8 +55,9 @@ class KeywordNameEntryViewController: UIViewController {
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        guard textField.window != nil, !textField.isFirstResponder else { return }
         
-        if textField.window != nil && textField.becomeFirstResponder() {
+        if textField.becomeFirstResponder() {
             print("[KeywordNameEntryViewController] viewDidAppear: Activated text field")
         }
     }
@@ -67,8 +70,8 @@ class KeywordNameEntryViewController: UIViewController {
     private func resignKeyboardIfNeeded(reason: String) {
         guard textField.isFirstResponder else { return }
         
-        textField.resignFirstResponder()
-        print("[KeywordNameEntryViewController] resignKeyboardIfNeeded: Resigned text field via \(reason)")
+        let result = textField.resignFirstResponder()
+        print("[KeywordNameEntryViewController] resignKeyboardIfNeeded: Resigned text field via \(reason), resignation result: \(result)")
     }
     
     @objc private func cancelTapped() {
@@ -92,5 +95,14 @@ class KeywordNameEntryViewController: UIViewController {
         print("[KeywordNameEntryViewController] saveTapped: Saving keyword \(name)")
         onSave?(name)
         dismiss(animated: true)
+    }
+}
+
+// MARK: - UITextFieldDelegate
+
+extension KeywordNameEntryViewController: UITextFieldDelegate {
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        saveTapped()
+        return true
     }
 }

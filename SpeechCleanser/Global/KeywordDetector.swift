@@ -41,6 +41,7 @@ final class KeywordDetector {
     private var noiseFloor: Float = 0
     private var lastGlobalDetection: Date?
     private var lastKeywordDetections: [UUID: Date] = [:]
+    private var lastLoggedNoise: Float = 0
     
     var onDetection: ((UUID, String) -> Void)?
     
@@ -56,12 +57,19 @@ final class KeywordDetector {
         
         if noiseFloor == 0 {
             noiseFloor = clamped
+            lastLoggedNoise = clamped
+            print("[KeywordDetector] updateNoise: Initialized noiseFloor=\(clamped)")
             return
         }
         
         let alpha = clamped > noiseFloor ? noiseLearningRate * 0.5 : noiseLearningRate
         let updated = (1 - alpha) * noiseFloor + alpha * clamped
         noiseFloor = min(max(updated, 0.0005), maxNoiseFloor)
+        
+        if abs(noiseFloor - lastLoggedNoise) > 0.01 {
+            lastLoggedNoise = noiseFloor
+            print("[KeywordDetector] updateNoise: Adjusted noiseFloor=\(noiseFloor) level=\(clamped)")
+        }
     }
     
     private func currentThreshold() -> Float {
@@ -346,9 +354,25 @@ final class KeywordDetector {
                 }
             }
             guard let candidate = bestKeyword else { return }
-            guard bestScore >= self.similarityThreshold else { return }
-            guard bestScore - runnerUp >= self.marginThreshold else { return }
-            guard self.canTrigger(keywordID: candidate.id) else { return }
+            if bestScore >= 0.4 {
+                print("[KeywordDetector] process: Candidate=\(candidate.name) score=\(bestScore) runnerUp=\(runnerUp) level=\(clampedLevel) threshold=\(triggerLevel)")
+            }
+            
+            guard bestScore >= self.similarityThreshold else {
+                print("[KeywordDetector] process: Rejected \(candidate.name) reason=similarity threshold score=\(bestScore) required=\(self.similarityThreshold)")
+                return
+            }
+            
+            let margin = bestScore - runnerUp
+            guard margin >= self.marginThreshold else {
+                print("[KeywordDetector] process: Rejected \(candidate.name) reason=margin score=\(bestScore) runnerUp=\(runnerUp) requiredMargin=\(self.marginThreshold)")
+                return
+            }
+            
+            guard self.canTrigger(keywordID: candidate.id) else {
+                print("[KeywordDetector] process: Rejected \(candidate.name) reason=cooldown active")
+                return
+            }
             
             self.markDetection(for: candidate.id)
             self.noiseFloor = min(self.noiseFloor, clampedLevel * 0.6)

@@ -8,8 +8,8 @@
 import UIKit
 
 class PavlokSettingsViewController: UIViewController {
-    private let apiKeyField = UITextField()
-    private let intensityField = UITextField()
+    private let apiKeyField = ContextAwareTextField()
+    private let intensityField = ContextAwareTextField()
     private let infoLabel = UILabel()
     private let initialAPIKey: String?
     private let initialIntensity: Int
@@ -45,6 +45,8 @@ class PavlokSettingsViewController: UIViewController {
         apiKeyField.smartDashesType = .no
         apiKeyField.returnKeyType = .next
         apiKeyField.textContentType = .none
+        apiKeyField.keyboardType = .asciiCapable
+        apiKeyField.enablesReturnKeyAutomatically = true
         apiKeyField.delegate = self
         apiKeyField.text = initialAPIKey
         
@@ -57,6 +59,7 @@ class PavlokSettingsViewController: UIViewController {
         intensityField.smartQuotesType = .no
         intensityField.returnKeyType = .done
         intensityField.textContentType = .none
+        intensityField.enablesReturnKeyAutomatically = true
         intensityField.delegate = self
         intensityField.text = String(initialIntensity)
         
@@ -126,7 +129,9 @@ class PavlokSettingsViewController: UIViewController {
 extension PavlokSettingsViewController: UITextFieldDelegate {
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         if textField === apiKeyField {
-            intensityField.becomeFirstResponder()
+            if intensityField.becomeFirstResponder() {
+                print("[PavlokSettingsViewController] textFieldShouldReturn: Activated text field")
+            }
         } else {
             textField.resignFirstResponder()
         }

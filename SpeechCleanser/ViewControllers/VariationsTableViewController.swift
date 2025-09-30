@@ -29,7 +29,6 @@ class VariationsTableViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         
-        title = keyword?.name
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addVariation))
         tableView.register(VariationCell.self, forCellReuseIdentifier: VariationCell.reuseID)

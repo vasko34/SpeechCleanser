@@ -25,7 +25,10 @@ struct AudioFingerprint {
         vDSP_measqv(centered, 1, &std, vDSP_Length(values.count))
         std = sqrtf(std)
         
-        guard std > .ulpOfOne else { return centered }
+        guard std > .ulpOfOne else {
+            print("[AudioFingerprint][ERROR] normalize: Skipped normalization due to negligible variance")
+            return centered
+        }
         
         var normalized = [Float](repeating: 0, count: values.count)
         var divisor = std
@@ -95,8 +98,17 @@ struct AudioFingerprint {
             }
         }
         
+        if channelCount > 1 {
+            print("[AudioFingerprint] fromFile: Mixed \(channelCount) channels into mono for \(url.lastPathComponent)")
+        }
+        
         let fingerprint = generateFingerprint(from: monoSamples, segments: segmentCount)
         let duration = TimeInterval(Double(frameLength) / floatFormat.sampleRate)
+        
+        if monoSamples.count != frameLength {
+            let difference = frameLength - monoSamples.count
+            print("[AudioFingerprint] fromFile: Adjusted sample count by \(difference) for \(url.lastPathComponent)")
+        }
         
         if !fingerprint.isEmpty {
             let minValue = fingerprint.min() ?? 0
@@ -137,7 +149,9 @@ struct AudioFingerprint {
         }
         
         if fingerprint.count < segments, let last = fingerprint.last {
-            fingerprint.append(contentsOf: Array(repeating: last, count: segments - fingerprint.count))
+            let deficit = segments - fingerprint.count
+            fingerprint.append(contentsOf: Array(repeating: last, count: deficit))
+            print("[AudioFingerprint] generateFingerprint: Padded fingerprint by \(deficit) segments")
         }
         
         let normalized = normalize(fingerprint)

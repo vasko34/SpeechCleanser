@@ -43,13 +43,25 @@ final class KeywordDetector {
     private var lastKeywordDetections: [UUID: Date] = [:]
     private var lastLoggedNoise: Float = 0
     private var lastLevelGateLog: Date?
+    private var lastBufferTrimLog: Date?
+    private var lastAnalysisLog: Date?
+    private var didLogEmptyKeywords = false
     
     var onDetection: ((UUID, String) -> Void)?
     
     private func appendSamples(_ samples: [Float]) {
+        guard !samples.isEmpty else { return }
+        
         circularBuffer.append(contentsOf: samples)
         if circularBuffer.count > maxSampleCount {
-            circularBuffer.removeFirst(circularBuffer.count - maxSampleCount)
+            let overflow = circularBuffer.count - maxSampleCount
+            circularBuffer.removeFirst(overflow)
+            
+            let now = Date()
+            if lastBufferTrimLog == nil || now.timeIntervalSince(lastBufferTrimLog!) > 2 {
+                lastBufferTrimLog = now
+                print("[KeywordDetector] appendSamples: Trimmed buffer overflow=\(overflow) currentCount=\(circularBuffer.count) maxCount=\(maxSampleCount)")
+            }
         }
     }
     
@@ -78,23 +90,42 @@ final class KeywordDetector {
         return max(minSignalLevel, min(boosted, maxNoiseFloor))
     }
     
-    private func canTrigger(keywordID: UUID) -> Bool {
-        let now = Date()
-        if let last = lastGlobalDetection, now.timeIntervalSince(last) < globalCooldown {
-            return false
+    private func cooldownReason(for keywordID: UUID, now: Date) -> String? {
+        if let last = lastGlobalDetection {
+            let remaining = globalCooldown - now.timeIntervalSince(last)
+            if remaining > 0 {
+                let formatted = String(format: "%.2f", remaining)
+                return "global cooldown remaining=\(formatted)s"
+            }
         }
         
-        if let previous = lastKeywordDetections[keywordID], now.timeIntervalSince(previous) < keywordCooldown {
-            return false
+        if let previous = lastKeywordDetections[keywordID] {
+            let remaining = keywordCooldown - now.timeIntervalSince(previous)
+            if remaining > 0 {
+                let formatted = String(format: "%.2f", remaining)
+                return "keyword cooldown remaining=\(formatted)s"
+            }
         }
         
-        return true
+        return nil
     }
     
-    private func markDetection(for keywordID: UUID) {
-        let now = Date()
-        lastGlobalDetection = now
-        lastKeywordDetections[keywordID] = now
+    private func markDetection(for keywordID: UUID, at date: Date) {
+        lastGlobalDetection = date
+        lastKeywordDetections[keywordID] = date
+    }
+    
+    private func resetEmptyKeywordLogFlag() {
+        if didLogEmptyKeywords {
+            didLogEmptyKeywords = false
+        }
+    }
+    
+    private func logEmptyKeywordsIfNeeded() {
+        if !didLogEmptyKeywords {
+            didLogEmptyKeywords = true
+            print("[KeywordDetector] logEmptyKeywordsIfNeeded: Ignored samples because no enabled keywords are configured")
+        }
     }
     
     private func normalize(_ values: inout [Float]) -> Bool {
@@ -240,6 +271,15 @@ final class KeywordDetector {
         let minimumRMS = max(minSignalLevel, rms * 0.45)
         let formattedDuration = String(format: "%.3f", safeDuration)
         let formattedRMS = String(format: "%.4f", minimumRMS)
+        
+        if trimmed.count != frameLength {
+            let removed = frameLength - trimmed.count
+            print("[KeywordDetector] prepareVariation: Trimmed \(removed) samples from variation \(variation.id.uuidString)")
+        }
+        
+        if resampled.count != trimmed.count {
+            print("[KeywordDetector] prepareVariation: Resampled variation \(variation.id.uuidString) originalSamples=\(trimmed.count) targetSamples=\(resampled.count)")
+        }
         print("[KeywordDetector] prepareVariation: Prepared variation \(variation.id.uuidString) duration=\(formattedDuration)s samples=\(template.count) minRMS=\(formattedRMS)")
         
         return CachedVariation(sampleCount: template.count, template: template, minRMS: minimumRMS)
@@ -285,6 +325,9 @@ final class KeywordDetector {
             self.lastGlobalDetection = nil
             self.lastKeywordDetections.removeAll(keepingCapacity: true)
             self.lastLevelGateLog = nil
+            self.lastBufferTrimLog = nil
+            self.lastAnalysisLog = nil
+            self.didLogEmptyKeywords = false
             
             let variationCount = self.keywords.reduce(0) { $0 + $1.variations.count }
             print("[KeywordDetector] configure: Cached \(variationCount) variations at sampleRate \(sampleRate)")
@@ -294,8 +337,12 @@ final class KeywordDetector {
     func process(samples: [Float], level: Float) {
         queue.async { [weak self] in
             guard let self = self else { return }
-            guard !self.keywords.isEmpty else { return }
+            guard !self.keywords.isEmpty else {
+                self.logEmptyKeywordsIfNeeded()
+                return
+            }
             
+            self.resetEmptyKeywordLogFlag()
             let clampedLevel = max(0, min(level, 1))
             self.updateNoise(with: clampedLevel)
             self.appendSamples(samples)
@@ -321,33 +368,50 @@ final class KeywordDetector {
             
             let searchCount = min(availableCount, self.maxSampleCount)
             let startIndex = availableCount - searchCount
-            let searchBuffer = Array(self.circularBuffer[startIndex..<availableCount])
-            guard !searchBuffer.isEmpty else { return }
+            guard searchCount > 0 else { return }
             
+            let now = Date()
+            let shouldLogAnalysis: Bool
+            if let last = self.lastAnalysisLog {
+                shouldLogAnalysis = now.timeIntervalSince(last) > 2
+            } else {
+                shouldLogAnalysis = true
+            }
+            
+            var keywordDiagnostics: [(String, Float, Int, Int, Int, Int)] = []
             var bestKeyword: CachedKeyword?
             var bestScore: Float = 0
             var runnerUp: Float = 0
             
-            for keyword in self.keywords {
-                var keywordBest: Float = 0
-                
-                for variation in keyword.variations {
-                    let sampleCount = variation.sampleCount
-                    guard sampleCount > 0, searchBuffer.count >= sampleCount else { continue }
+            self.circularBuffer.withUnsafeBufferPointer { pointer in
+                guard let baseAddress = pointer.baseAddress else { return }
+                let searchBase = baseAddress + startIndex
+
+                for keyword in self.keywords {
+                    var keywordBest: Float = 0
+                    var evaluatedWindows = 0
+                    var rmsFilteredWindows = 0
+                    var normalizationFilteredWindows = 0
+                    var insufficientVariations = 0
                     
-                    let stride = max(1, sampleCount / self.strideDivisor)
-                    let latestStart = max(0, searchBuffer.count - sampleCount * self.retentionMultiplier)
-                    let startOffset = min(latestStart, searchBuffer.count - sampleCount)
-                    var windowBuffer = [Float](repeating: 0, count: sampleCount)
-                    
-                    searchBuffer.withUnsafeBufferPointer { pointer in
-                        guard let base = pointer.baseAddress else { return }
-                        var offset = startOffset
+                    for variation in keyword.variations {
+                        let sampleCount = variation.sampleCount
+                        guard sampleCount > 0 else { continue }
+                        guard searchCount >= sampleCount else {
+                            insufficientVariations += 1
+                            continue
+                        }
                         
-                        while offset + sampleCount <= searchBuffer.count {
+                        let stride = max(1, sampleCount / self.strideDivisor)
+                        let latestStart = max(0, searchCount - sampleCount * self.retentionMultiplier)
+                        let startOffset = min(latestStart, searchCount - sampleCount)
+                        var offset = startOffset
+                        var windowBuffer = [Float](repeating: 0, count: sampleCount)
+                        
+                        while offset + sampleCount <= searchCount {
                             windowBuffer.withUnsafeMutableBufferPointer { destination in
                                 guard let dest = destination.baseAddress else { return }
-                                let source = base + offset
+                                let source = searchBase + offset
                                 dest.update(from: source, count: sampleCount)
                             }
                             
@@ -356,11 +420,13 @@ final class KeywordDetector {
                             rms = sqrtf(rms)
                             
                             if rms < variation.minRMS {
+                                rmsFilteredWindows += 1
                                 offset += stride
                                 continue
                             }
                             
                             if !self.normalize(&windowBuffer) {
+                                normalizationFilteredWindows += 1
                                 offset += stride
                                 continue
                             }
@@ -372,42 +438,59 @@ final class KeywordDetector {
                             if similarity > keywordBest {
                                 keywordBest = similarity
                             }
+                            evaluatedWindows += 1
                             offset += stride
                         }
                     }
-                }
-                guard keywordBest > 0 else { continue }
-                
-                if keywordBest > bestScore {
-                    runnerUp = bestScore
-                    bestScore = keywordBest
-                    bestKeyword = keyword
-                } else if keywordBest > runnerUp {
-                    runnerUp = keywordBest
+                    if shouldLogAnalysis {
+                        keywordDiagnostics.append((keyword.name, keywordBest, evaluatedWindows, rmsFilteredWindows, normalizationFilteredWindows, insufficientVariations))
+                    }
+                    guard keywordBest > 0 else { continue }
+                    
+                    if keywordBest > bestScore {
+                        runnerUp = bestScore
+                        bestScore = keywordBest
+                        bestKeyword = keyword
+                    } else if keywordBest > runnerUp {
+                        runnerUp = keywordBest
+                    }
                 }
             }
+            
+            if shouldLogAnalysis, !keywordDiagnostics.isEmpty {
+                let formattedLevel = String(format: "%.4f", clampedLevel)
+                let formattedThreshold = String(format: "%.4f", triggerLevel)
+                let limitedDiagnostics = keywordDiagnostics.prefix(3).map { detail -> String in
+                    let formattedScore = String(format: "%.3f", detail.1)
+                    return "\(detail.0){score=\(formattedScore) windows=\(detail.2) rmsRejects=\(detail.3) normRejects=\(detail.4) insufficient=\(detail.5)}"
+                }.joined(separator: ", ")
+                
+                print("[KeywordDetector] process: Analysis keywords=\(keywordDiagnostics.count) bufferSamples=\(searchCount) level=\(formattedLevel) threshold=\(formattedThreshold) details=[\(limitedDiagnostics)]")
+                self.lastAnalysisLog = now
+            }
+            
             guard let candidate = bestKeyword else { return }
             if bestScore >= 0.4 {
                 print("[KeywordDetector] process: Candidate=\(candidate.name) score=\(bestScore) runnerUp=\(runnerUp) level=\(clampedLevel) threshold=\(triggerLevel)")
             }
             
             guard bestScore >= self.similarityThreshold else {
-                print("[KeywordDetector] process: Rejected \(candidate.name) reason=similarity threshold score=\(bestScore) required=\(self.similarityThreshold)")
+                print("[KeywordDetector][ERROR] process: Rejected \(candidate.name) reason=similarity threshold score=\(bestScore) required=\(self.similarityThreshold)")
                 return
             }
             
             let margin = bestScore - runnerUp
             guard margin >= self.marginThreshold else {
-                print("[KeywordDetector] process: Rejected \(candidate.name) reason=margin score=\(bestScore) runnerUp=\(runnerUp) requiredMargin=\(self.marginThreshold)")
+                print("[KeywordDetector][ERROR] process: Rejected \(candidate.name) reason=margin score=\(bestScore) runnerUp=\(runnerUp) requiredMargin=\(self.marginThreshold)")
                 return
             }
             
-            guard self.canTrigger(keywordID: candidate.id) else {
-                print("[KeywordDetector] process: Rejected \(candidate.name) reason=cooldown active")
+            if let reason = self.cooldownReason(for: candidate.id, now: now) {
+                print("[KeywordDetector][ERROR] process: Rejected \(candidate.name) reason=\(reason)")
                 return
             }
             
-            self.markDetection(for: candidate.id)
+            self.markDetection(for: candidate.id, at: now)
             self.noiseFloor = min(self.noiseFloor, clampedLevel * 0.6)
             self.circularBuffer.removeAll(keepingCapacity: true)
             DispatchQueue.main.async {

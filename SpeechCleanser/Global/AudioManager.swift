@@ -96,9 +96,8 @@ final class AudioManager {
             print("[AudioManager] start: Installing tap with bufferSize 1024 sampleRate=\(format.sampleRate) channels=\(format.channelCount)")
             
             input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 let frameLength = Int(buffer.frameLength)
-                guard let self = self else { return }
                 guard frameLength > 0 else { return }
                 guard let rawPointers = buffer.floatChannelData else {
                     if !self.didLogMissingChannelData {

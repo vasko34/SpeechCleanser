@@ -61,7 +61,7 @@ final class PavlokService {
             return
         }
         
-        URLSession.shared.dataTask(with: request) { _, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             if let error = error {
                 print("[PavlokService][ERROR] sendZap: PavlokService request failed with error: \(error.localizedDescription)")
                 return
@@ -72,7 +72,7 @@ final class PavlokService {
                 return
             }
             
-            print("[PavlokService] sendZap: Triggered zap for keyword \(keyword.name) with intensity \(self.intensity)")
+            print("[PavlokService] sendZap: Triggered zap for keyword \(keyword.name) with intensity \(self?.intensity ?? 0)")
         }.resume()
     }
 }

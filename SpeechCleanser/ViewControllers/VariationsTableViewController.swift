@@ -98,8 +98,8 @@ class VariationsTableViewController: UITableViewController {
                     
                     print("[VariationsTableViewController] beginRecordingFlow: Recording to \(url.lastPathComponent)")
                     let alert = UIAlertController(title: "Recording…", message: "Speak your variation and tap Stop.", preferredStyle: .alert)
-                    alert.addAction(UIAlertAction(title: "Stop", style: .destructive, handler: { [weak self] _ in
-                        self?.finishRecording()
+                    alert.addAction(UIAlertAction(title: "Stop", style: .destructive, handler: { _ in
+                        self.finishRecording()
                     }))
                     
                     self.recordAlert = alert
@@ -171,9 +171,7 @@ class VariationsTableViewController: UITableViewController {
             KeywordStore.shared.save(list)
             AudioManager.shared.reloadKeywords(list)
             
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                
+            DispatchQueue.main.async {
                 self.keyword = kword
                 self.tableView.reloadData()
                 print("[VariationsTableViewController] finishRecording: Saved new variation for keyword \(kword.name)")

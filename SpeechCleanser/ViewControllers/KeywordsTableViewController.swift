@@ -34,9 +34,7 @@ class KeywordsTableViewController: UITableViewController {
         controller.onSave = { [weak self] name in
             guard let self else { return }
             
-            self.persistenceQueue.async { [weak self] in
-                guard let self else { return }
-                
+            self.persistenceQueue.async {
                 var list = KeywordStore.shared.load()
                 list.append(Keyword(name: name, isEnabled: true, variations: []))
                 KeywordStore.shared.save(list)

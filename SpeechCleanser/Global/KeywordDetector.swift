@@ -223,7 +223,8 @@ final class KeywordDetector {
                 for (identifier, var state) in candidateStates {
                     state.framesSinceUpdate += 1
                     state.streak = max(state.streak - 1, 0)
-                    if state.framesSinceUpdate <= maxInactiveFrames {
+                    let allowance = allowedInactiveFrames(for: state)
+                    if state.framesSinceUpdate <= allowance {
                         retained[identifier] = state
                     } else {
                         let scoreString = String(format: "%.3f", Double(state.bestScore))
@@ -262,7 +263,8 @@ final class KeywordDetector {
             
             if var previousState = previous {
                 let gap = previousState.framesSinceUpdate
-                if gap > 0 {
+                let allowance = allowedInactiveFrames(for: previousState)
+                if gap > allowance {
                     if gap > maxInactiveFrames {
                         previousState.streak = 0
                         previousState.bestScore = 0
@@ -272,14 +274,16 @@ final class KeywordDetector {
                         previousState.nearMissCount = 0
                         didReset = true
                     } else {
-                        previousState.streak = max(previousState.streak - gap, 0)
-                        previousState.nearMissCount = max(previousState.nearMissCount - gap, 0)
+                        let penalty = max(gap - maxInactiveFrames, 0)
+                        if penalty > 0 {
+                            previousState.streak = max(previousState.streak - penalty, 0)
+                            previousState.nearMissCount = max(previousState.nearMissCount - penalty, 0)
+                        }
                         if previousState.bestScore < previousState.threshold && previousState.nearMissCount == 0 {
                             previousState.hasStrongFrame = false
                         }
                     }
                 }
-                previousState.framesSinceUpdate = match.offset
                 previousState.offset = match.offset
                 state = previousState
             }
@@ -356,13 +360,17 @@ final class KeywordDetector {
             if state.bestScore >= state.threshold - acceptanceMargin * 0.3 {
                 state.hasStrongFrame = true
             }
-
+            
             let highConfidence = state.hasStrongFrame && max(state.bestScore, match.score) >= state.threshold + 0.14
             let competitor = orderedMatches.first { $0.key != keywordID }
-
             let hasRequiredFrames = state.frameCount >= requiredStreak
-
-            if state.hasStrongFrame && levelWithinBounds && ((state.streak >= requiredStreak && hasRequiredFrames) || highConfidence) {
+            let ratioTightRange = levelRatio >= 0.6 && levelRatio <= 1.6
+            let meetsPrimaryScore = state.bestScore >= state.threshold
+            let meetsRelaxedScore = !meetsPrimaryScore && state.bestScore >= state.threshold - acceptanceMargin * 0.45 && state.nearMissCount >= requiredStreak + 1 && ratioTightRange
+            let meetsScoreRequirement = meetsPrimaryScore || meetsRelaxedScore
+            let levelCheck = meetsPrimaryScore ? levelWithinBounds : (levelWithinBounds && ratioTightRange)
+            
+            if state.hasStrongFrame && levelCheck && ((state.streak >= requiredStreak && hasRequiredFrames) || highConfidence) && meetsScoreRequirement {
                 let finalScore = max(state.bestScore, match.score)
                 
                 if let competitor {
@@ -374,7 +382,8 @@ final class KeywordDetector {
                         let competitorString = String(format: "%.3f", Double(competitorScore))
                         let differenceString = String(format: "%.3f", Double(difference))
                         print("[KeywordDetector] appendFeatureLocked: Candidate suppressed for keyword \(state.name) due to competitor \(competitor.value.name) score=\(scoreString) competitorScore=\(competitorString) diff=\(differenceString)")
-                        state.framesSinceUpdate = 1
+                        state.offset = match.offset
+                        state.framesSinceUpdate = min(1, allowedInactiveFrames(for: state))
                         state.streak = max(state.streak - 1, 0)
                         state.nearMissCount = max(state.nearMissCount - 1, 0)
                         if state.nearMissCount == 0 && state.bestScore < state.threshold {
@@ -410,6 +419,10 @@ final class KeywordDetector {
                 
                 candidateStates.removeAll(keepingCapacity: true)
                 break
+            } else if state.hasStrongFrame && ((state.streak >= requiredStreak && hasRequiredFrames) || highConfidence) && !meetsScoreRequirement {
+                let scoreString = String(format: "%.3f", Double(state.bestScore))
+                let thresholdString = String(format: "%.3f", Double(state.threshold))
+                print("[KeywordDetector] appendFeatureLocked: Candidate blocked by score for keyword \(state.name) score=\(scoreString) threshold=\(thresholdString) nearMiss=\(state.nearMissCount)")
             }
             
             if state.hasStrongFrame {
@@ -426,7 +439,7 @@ final class KeywordDetector {
                     print("[KeywordDetector] appendFeatureLocked: Candidate building streak for keyword \(state.name) score=\(scoreString) streak=\(state.streak) required=\(requiredStreak)")
                 }
             }
-            state.framesSinceUpdate = match.offset
+            state.framesSinceUpdate = 0
             state.offset = match.offset
             updatedStates[keywordID] = state
         }
@@ -439,7 +452,8 @@ final class KeywordDetector {
             for (identifier, var state) in candidateStates where updatedStates[identifier] == nil {
                 state.framesSinceUpdate += 1
                 state.streak = max(state.streak - 1, 0)
-                if state.framesSinceUpdate <= maxInactiveFrames {
+                let allowance = allowedInactiveFrames(for: state)
+                if state.framesSinceUpdate <= allowance {
                     updatedStates[identifier] = state
                 } else {
                     let scoreString = String(format: "%.3f", Double(state.bestScore))
@@ -450,6 +464,12 @@ final class KeywordDetector {
         
         candidateStates = updatedStates
         return nil
+    }
+    
+    private func allowedInactiveFrames(for state: CandidateState) -> Int {
+        let offsetAllowance = min(state.offset + maxInactiveFrames, max(featuresPerSecond, maxInactiveFrames))
+        let lengthAllowance = max(state.featureCount / 4, maxInactiveFrames)
+        return max(maxInactiveFrames, max(offsetAllowance, lengthAllowance))
     }
     
     private func normalizeVector(_ vector: inout [Float]) -> Bool {

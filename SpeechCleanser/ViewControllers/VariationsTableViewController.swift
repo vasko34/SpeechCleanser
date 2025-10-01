@@ -165,7 +165,33 @@ class VariationsTableViewController: UITableViewController {
             let relativePath = url.lastPathComponent
             let measuredDuration = max(actualDuration, analysis.duration)
             let safeDuration = max(measuredDuration, 0.05)
-            let variation = Variation(filePath: relativePath, duration: safeDuration, fingerprint: analysis.fingerprint)
+            let fingerprint = analysis.fingerprint
+            let hasSignal = fingerprint.contains { abs($0) > 0.0001 }
+            
+            if fingerprint.count < 4 || !hasSignal {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    print("[VariationsTableViewController] finishRecording: Removed unusable recording \(relativePath)")
+                } catch {
+                    print("[VariationsTableViewController][ERROR] finishRecording: Failed to remove unusable recording with error: \(error.localizedDescription)")
+                }
+                
+                DispatchQueue.main.async {
+                    self.showAlert(title: "Recording Too Short", message: "Please record a longer or louder variation for better detection.")
+                }
+                return
+            }
+            
+            let variation = Variation(
+                filePath: relativePath,
+                duration: safeDuration,
+                fingerprint: fingerprint,
+                rms: analysis.rms,
+                analysisSampleRate: analysis.sampleRate,
+                analysisWindowSize: analysis.windowSize,
+                analysisHopSize: analysis.hopSize
+            )
+            
             kword.variations.append(variation)
             list[idx] = kword
             KeywordStore.shared.save(list)

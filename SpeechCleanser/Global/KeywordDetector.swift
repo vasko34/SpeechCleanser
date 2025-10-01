@@ -17,6 +17,7 @@ final class KeywordDetector {
         let minimumLevel: Float
         let maximumLevel: Float
         let matchThreshold: Float
+        let scale: Float
     }
     
     private struct DetectionResult {
@@ -24,6 +25,8 @@ final class KeywordDetector {
         let name: String
         let score: Float
         let averageLevel: Float
+        let featureCount: Int
+        let scale: Float
     }
     
     private var lock = os_unfair_lock_s()
@@ -66,6 +69,7 @@ final class KeywordDetector {
         
         var bestMatch: DetectionResult?
         var bestScore: Float = 0
+        var nearMiss: (keywordName: String, score: Float, threshold: Float, scale: Float)?
         for model in models {
             if cooldowns[model.keywordID] != nil { continue }
             if featureBuffer.count < model.featureCount { continue }
@@ -109,23 +113,30 @@ final class KeywordDetector {
             
             if score >= model.matchThreshold {
                 if bestMatch == nil || score > bestScore {
-                    bestMatch = DetectionResult(keywordID: model.keywordID, name: model.keywordName, score: score, averageLevel: mean)
+                    bestMatch = DetectionResult(keywordID: model.keywordID, name: model.keywordName, score: score, averageLevel: mean, featureCount: model.featureCount, scale: model.scale)
                     bestScore = score
+                }
+            } else if score >= model.matchThreshold - 0.05 {
+                if nearMiss == nil || score > nearMiss!.score {
+                    nearMiss = (model.keywordName, score, model.matchThreshold, model.scale)
                 }
             }
         }
+        if bestMatch == nil, let info = nearMiss {
+            let scoreString = String(format: "%.3f", Double(info.score))
+            let thresholdString = String(format: "%.3f", Double(info.threshold))
+            let scaleString = String(format: "%.2fx", Double(info.scale))
+            print("[KeywordDetector] appendFeatureLocked: Near miss for keyword \(info.keywordName) score=\(scoreString) threshold=\(thresholdString) scale=\(scaleString)")
+        }
         guard let detection = bestMatch else { return nil }
         
-        if let model = models.first(where: { $0.keywordID == detection.keywordID }) {
-            let cooldownFrames = max(model.featureCount, featuresPerSecond * 2)
-            cooldowns[model.keywordID] = cooldownFrames
-            globalCooldown = max(globalCooldown, featuresPerSecond)
-            let scoreString = String(format: "%.3f", Double(detection.score))
-            let levelString = String(format: "%.5f", Double(detection.averageLevel))
-            print("[KeywordDetector] appendFeatureLocked: Detected keyword \(model.keywordName) score=\(scoreString) level=\(levelString)")
-        } else {
-            print("[KeywordDetector][ERROR] appendFeatureLocked: Missing model for detection keywordID \(detection.keywordID.uuidString)")
-        }
+        let cooldownFrames = max(detection.featureCount, featuresPerSecond * 2)
+        cooldowns[detection.keywordID] = cooldownFrames
+        globalCooldown = max(globalCooldown, featuresPerSecond)
+        let scoreString = String(format: "%.3f", Double(detection.score))
+        let levelString = String(format: "%.5f", Double(detection.averageLevel))
+        let scaleString = String(format: "%.2fx", Double(detection.scale))
+        print("[KeywordDetector] appendFeatureLocked: Detected keyword \(detection.name) score=\(scoreString) level=\(levelString) scale=\(scaleString)")
         
         return detection
     }
@@ -163,16 +174,60 @@ final class KeywordDetector {
     }
     
     private func thresholdForFeatureCount(_ count: Int) -> Float {
-        if count < 10 { return 0.92 }
-        if count < 20 { return 0.88 }
-        if count < 35 { return 0.85 }
-        return 0.82
+        if count < 10 { return 0.90 }
+        if count < 20 { return 0.86 }
+        if count < 35 { return 0.83 }
+        if count < 50 { return 0.80 }
+        return 0.78
     }
     
     private func withLock(_ block: () -> Void) {
         os_unfair_lock_lock(&lock)
         block()
         os_unfair_lock_unlock(&lock)
+    }
+    
+    private func resampleFingerprint(_ fingerprint: [Float], targetCount: Int) -> [Float] {
+        guard targetCount > 1, fingerprint.count > 1 else { return fingerprint }
+        
+        var result = [Float](repeating: 0, count: targetCount)
+        let scale = Float(fingerprint.count - 1) / Float(targetCount - 1)
+        
+        for index in 0..<targetCount {
+            let position = Float(index) * scale
+            let lower = Int(position)
+            let upper = min(lower + 1, fingerprint.count - 1)
+            let fraction = position - Float(lower)
+            let lowerValue = fingerprint[lower]
+            let upperValue = fingerprint[upper]
+            result[index] = lowerValue + (upperValue - lowerValue) * fraction
+        }
+        
+        return result
+    }
+    
+    private func scaledThreshold(for count: Int, scale: Float) -> Float {
+        var threshold = thresholdForFeatureCount(count)
+        if abs(scale - 1) > 0.01 {
+            threshold -= 0.03
+        }
+        return max(threshold, 0.72)
+    }
+    
+    private func scaleVariants(for featureCount: Int) -> [Float] {
+        if featureCount >= 45 {
+            return [0.82, 0.9, 1.1, 1.22]
+        }
+        
+        if featureCount >= 25 {
+            return [0.86, 0.94, 1.08, 1.18]
+        }
+        
+        if featureCount >= 12 {
+            return [0.88, 1.12]
+        }
+        
+        return [0.94, 1.06]
     }
     
     func configure(keywords: [Keyword], sampleRate: Double) {
@@ -193,24 +248,46 @@ final class KeywordDetector {
                 
                 let featureCount = normalized.count
                 let expected = max(variation.rms, 0.0001)
-                let minimum = max(expected * 0.35, 0.00005)
-                let maximum = max(expected * 2.8, minimum * 2)
-                let threshold = thresholdForFeatureCount(featureCount)
-                
-                let model = VariationModel(
+                let minimum = max(expected * 0.28, 0.00005)
+                let maximum = max(expected * 3.2, minimum * 2.2)
+
+                let baseModel = VariationModel(
                     keywordID: keyword.id,
                     keywordName: keyword.name,
                     fingerprint: normalized,
                     featureCount: featureCount,
                     minimumLevel: minimum,
                     maximumLevel: maximum,
-                    matchThreshold: threshold
+                    matchThreshold: thresholdForFeatureCount(featureCount),
+                    scale: 1
                 )
                 
-                newModels.append(model)
-                enabledVariationCount += 1
+                newModels.append(baseModel)
                 longest = max(longest, featureCount)
                 
+                let variants = scaleVariants(for: featureCount)
+                for scale in variants {
+                    let scaledCount = max(6, Int(round(Float(featureCount) * scale)))
+                    if scaledCount == featureCount { continue }
+                    var scaledFingerprint = resampleFingerprint(normalized, targetCount: scaledCount)
+                    if !normalizeVector(&scaledFingerprint) { continue }
+                    
+                    let scaledModel = VariationModel(
+                        keywordID: keyword.id,
+                        keywordName: keyword.name,
+                        fingerprint: scaledFingerprint,
+                        featureCount: scaledCount,
+                        minimumLevel: minimum,
+                        maximumLevel: maximum,
+                        matchThreshold: scaledThreshold(for: scaledCount, scale: scale),
+                        scale: scale
+                    )
+                    
+                    newModels.append(scaledModel)
+                    longest = max(longest, scaledCount)
+                }
+                
+                enabledVariationCount += 1
                 if !didAssignHopConfiguration {
                     let hopDuration = Double(max(variation.analysisHopSize, 1)) / max(variation.analysisSampleRate, 1)
                     let computedFeaturesPerSecond = max(1, Int(round(1.0 / hopDuration)))

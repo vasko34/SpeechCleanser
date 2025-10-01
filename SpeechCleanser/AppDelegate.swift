@@ -12,10 +12,7 @@ import UserNotifications
 class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            NotificationManager.requestAuthorization()
-        }
-        
+        NotificationManager.requestAuthorization()
         AudioManager.shared.onKeywordDetected = { keyword in
             NotificationManager.sendDetectionNotification(for: keyword)
             PavlokService.shared.sendZap(for: keyword)

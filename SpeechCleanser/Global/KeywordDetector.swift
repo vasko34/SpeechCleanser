@@ -29,6 +29,18 @@ final class KeywordDetector {
         let scale: Float
     }
     
+    private struct CandidateState {
+        let keywordID: UUID
+        let name: String
+        var streak: Int
+        var bestScore: Float
+        var totalLevel: Float
+        var frameCount: Int
+        var featureCount: Int
+        var scale: Float
+        var threshold: Float
+    }
+    
     private var lock = os_unfair_lock_s()
     private var models: [VariationModel] = []
     private var sampleBuffer: [Float] = []
@@ -36,6 +48,7 @@ final class KeywordDetector {
     private var featureBuffer: [Float] = []
     private var candidateBuffer: [Float] = []
     private var cooldowns: [UUID: Int] = [:]
+    private var candidateStates: [UUID: CandidateState] = [:]
     private var globalCooldown = 0
     private var windowSamples = max(1, Int(AudioFingerprint.defaultSampleRate * AudioFingerprint.defaultWindowDuration))
     private var hopSamples = max(1, Int(AudioFingerprint.defaultSampleRate * AudioFingerprint.defaultHopDuration))
@@ -52,6 +65,9 @@ final class KeywordDetector {
         }
         
         if globalCooldown > 0 {
+            if !candidateStates.isEmpty {
+                candidateStates.removeAll(keepingCapacity: true)
+            }
             globalCooldown -= 1
         }
         
@@ -67,9 +83,9 @@ final class KeywordDetector {
         }
         guard globalCooldown == 0 else { return nil }
         
-        var bestMatch: DetectionResult?
-        var bestScore: Float = 0
         var nearMiss: (keywordName: String, score: Float, threshold: Float, scale: Float)?
+        var bestMatches: [UUID: (name: String, score: Float, mean: Float, featureCount: Int, scale: Float, threshold: Float)] = [:]
+        
         for model in models {
             if cooldowns[model.keywordID] != nil { continue }
             if featureBuffer.count < model.featureCount { continue }
@@ -112,9 +128,12 @@ final class KeywordDetector {
             }
             
             if score >= model.matchThreshold {
-                if bestMatch == nil || score > bestScore {
-                    bestMatch = DetectionResult(keywordID: model.keywordID, name: model.keywordName, score: score, averageLevel: mean, featureCount: model.featureCount, scale: model.scale)
-                    bestScore = score
+                if let existing = bestMatches[model.keywordID] {
+                    if score > existing.score {
+                        bestMatches[model.keywordID] = (model.keywordName, score, mean, model.featureCount, model.scale, model.matchThreshold)
+                    }
+                } else {
+                    bestMatches[model.keywordID] = (model.keywordName, score, mean, model.featureCount, model.scale, model.matchThreshold)
                 }
             } else if score >= model.matchThreshold - 0.05 {
                 if nearMiss == nil || score > nearMiss!.score {
@@ -122,23 +141,99 @@ final class KeywordDetector {
                 }
             }
         }
-        if bestMatch == nil, let info = nearMiss {
+        if bestMatches.isEmpty, let info = nearMiss {
             let scoreString = String(format: "%.3f", Double(info.score))
             let thresholdString = String(format: "%.3f", Double(info.threshold))
             let scaleString = String(format: "%.2fx", Double(info.scale))
             print("[KeywordDetector] appendFeatureLocked: Near miss for keyword \(info.keywordName) score=\(scoreString) threshold=\(thresholdString) scale=\(scaleString)")
         }
-        guard let detection = bestMatch else { return nil }
+        guard !bestMatches.isEmpty else {
+            if !candidateStates.isEmpty {
+                candidateStates.removeAll(keepingCapacity: true)
+            }
+            return nil
+        }
         
-        let cooldownFrames = max(detection.featureCount, featuresPerSecond * 2)
-        cooldowns[detection.keywordID] = cooldownFrames
-        globalCooldown = max(globalCooldown, featuresPerSecond)
-        let scoreString = String(format: "%.3f", Double(detection.score))
-        let levelString = String(format: "%.5f", Double(detection.averageLevel))
-        let scaleString = String(format: "%.2fx", Double(detection.scale))
-        print("[KeywordDetector] appendFeatureLocked: Detected keyword \(detection.name) score=\(scoreString) level=\(levelString) scale=\(scaleString)")
+        let orderedMatches = bestMatches.sorted { $0.value.score > $1.value.score }
+        var updatedStates: [UUID: CandidateState] = [:]
+        var detectionFromStates: DetectionResult?
         
-        return detection
+        for (keywordID, context) in orderedMatches {
+            let match = context
+            let previous = candidateStates[keywordID]
+            var state = previous ?? CandidateState(
+                keywordID: keywordID,
+                name: match.name,
+                streak: 0,
+                bestScore: 0,
+                totalLevel: 0,
+                frameCount: 0,
+                featureCount: match.featureCount,
+                scale: match.scale,
+                threshold: match.threshold
+            )
+            
+            let wasNewCandidate = previous == nil
+            state.streak += 1
+            state.totalLevel += match.mean
+            state.frameCount += 1
+            
+            if match.score > state.bestScore {
+                state.bestScore = match.score
+                state.featureCount = match.featureCount
+                state.scale = match.scale
+                state.threshold = match.threshold
+            }
+            
+            if wasNewCandidate {
+                let scoreString = String(format: "%.3f", Double(match.score))
+                let thresholdString = String(format: "%.3f", Double(match.threshold))
+                let scaleString = String(format: "%.2fx", Double(match.scale))
+                let levelString = String(format: "%.5f", Double(match.mean))
+                print("[KeywordDetector] appendFeatureLocked: Candidate started for keyword \(match.name) score=\(scoreString) threshold=\(thresholdString) level=\(levelString) scale=\(scaleString)")
+            } else if match.score > (previous?.bestScore ?? 0) {
+                let scoreString = String(format: "%.3f", Double(match.score))
+                let thresholdString = String(format: "%.3f", Double(match.threshold))
+                let scaleString = String(format: "%.2fx", Double(match.scale))
+                let levelString = String(format: "%.5f", Double(match.mean))
+                print("[KeywordDetector] appendFeatureLocked: Candidate improved for keyword \(match.name) score=\(scoreString) threshold=\(thresholdString) level=\(levelString) scale=\(scaleString) streak=\(state.streak)")
+            }
+            
+            let averageLevel = state.totalLevel / Float(max(state.frameCount, 1))
+            let immediateTrigger = match.score >= match.threshold + 0.08
+            
+            if immediateTrigger || state.streak >= 2 {
+                let finalScore = max(state.bestScore, match.score)
+                let cooldownFrames = max(state.featureCount, featuresPerSecond * 2)
+                cooldowns[keywordID] = cooldownFrames
+                globalCooldown = max(globalCooldown, featuresPerSecond)
+                let scoreString = String(format: "%.3f", Double(finalScore))
+                let levelString = String(format: "%.5f", Double(averageLevel))
+                let scaleString = String(format: "%.2fx", Double(state.scale))
+                print("[KeywordDetector] appendFeatureLocked: Detected keyword \(state.name) score=\(scoreString) level=\(levelString) scale=\(scaleString)")
+                
+                detectionFromStates = DetectionResult(
+                    keywordID: keywordID,
+                    name: state.name,
+                    score: finalScore,
+                    averageLevel: averageLevel,
+                    featureCount: state.featureCount,
+                    scale: state.scale
+                )
+                
+                candidateStates.removeAll(keepingCapacity: true)
+                break
+            }
+            
+            updatedStates[keywordID] = state
+        }
+        
+        if let detectionFromStates {
+            return detectionFromStates
+        }
+        
+        candidateStates = updatedStates
+        return nil
     }
     
     private func normalizeVector(_ vector: inout [Float]) -> Bool {

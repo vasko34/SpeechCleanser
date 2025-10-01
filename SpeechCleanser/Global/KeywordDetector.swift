@@ -42,9 +42,13 @@ final class KeywordDetector {
         var threshold: Float
         var expectedLevel: Float
         var hasStrongFrame: Bool
+        var framesSinceUpdate: Int
+        var nearMissCount: Int
     }
     
     private let acceptanceMargin: Float = 0.045
+    private let maxInactiveFrames = 3
+    
     private var lock = os_unfair_lock_s()
     private var models: [VariationModel] = []
     private var sampleBuffer: [Float] = []
@@ -179,7 +183,18 @@ final class KeywordDetector {
         }
         guard !bestMatches.isEmpty else {
             if !candidateStates.isEmpty {
-                candidateStates.removeAll(keepingCapacity: true)
+                var retained: [UUID: CandidateState] = [:]
+                for (identifier, var state) in candidateStates {
+                    state.framesSinceUpdate += 1
+                    state.streak = max(state.streak - 1, 0)
+                    if state.framesSinceUpdate <= maxInactiveFrames {
+                        retained[identifier] = state
+                    } else {
+                        let scoreString = String(format: "%.3f", Double(state.bestScore))
+                        print("[KeywordDetector] appendFeatureLocked: Candidate expired for keyword \(state.name) after \(state.framesSinceUpdate) silent frames bestScore=\(scoreString)")
+                    }
+                }
+                candidateStates = retained
             }
             return nil
         }
@@ -191,6 +206,7 @@ final class KeywordDetector {
         for (keywordID, context) in orderedMatches {
             let match = context
             let previous = candidateStates[keywordID]
+            var didReset = false
             var state = previous ?? CandidateState(
                 keywordID: keywordID,
                 name: match.name,
@@ -202,10 +218,34 @@ final class KeywordDetector {
                 scale: match.scale,
                 threshold: match.threshold,
                 expectedLevel: match.expectedLevel,
-                hasStrongFrame: false
+                hasStrongFrame: false,
+                framesSinceUpdate: 0,
+                nearMissCount: 0
             )
             
-            let wasNewCandidate = previous == nil
+            if var previousState = previous {
+                let gap = previousState.framesSinceUpdate
+                if gap > 0 {
+                    if gap > maxInactiveFrames {
+                        previousState.streak = 0
+                        previousState.bestScore = 0
+                        previousState.totalLevel = 0
+                        previousState.frameCount = 0
+                        previousState.hasStrongFrame = false
+                        previousState.nearMissCount = 0
+                        didReset = true
+                    } else {
+                        previousState.streak = max(previousState.streak - gap, 0)
+                        previousState.nearMissCount = max(previousState.nearMissCount - gap, 0)
+                        if previousState.bestScore < previousState.threshold && previousState.nearMissCount == 0 {
+                            previousState.hasStrongFrame = false
+                        }
+                    }
+                }
+                previousState.framesSinceUpdate = 0
+                state = previousState
+            }
+            
             state.streak += 1
             state.totalLevel += match.mean
             state.frameCount += 1
@@ -222,7 +262,24 @@ final class KeywordDetector {
                 state.hasStrongFrame = true
             }
             
-            if wasNewCandidate {
+            let requiredStreak = state.featureCount <= 14 ? 2 : 3
+            if match.passesThreshold {
+                state.hasStrongFrame = true
+                state.nearMissCount = max(state.nearMissCount, 1)
+            } else if match.score >= state.threshold - acceptanceMargin * 0.5 {
+                state.nearMissCount += 1
+                if state.nearMissCount >= requiredStreak + 1 {
+                    state.hasStrongFrame = true
+                }
+            } else {
+                state.nearMissCount = max(state.nearMissCount - 1, 0)
+                if state.nearMissCount == 0 && state.bestScore < state.threshold {
+                    state.hasStrongFrame = false
+                }
+            }
+            
+            let startedNew = previous == nil || didReset
+            if startedNew {
                 let scoreString = String(format: "%.3f", Double(match.score))
                 let thresholdString = String(format: "%.3f", Double(match.threshold))
                 let scaleString = String(format: "%.2fx", Double(match.scale))
@@ -240,18 +297,41 @@ final class KeywordDetector {
             let expectedLevel = max(state.expectedLevel, 0.0001)
             let levelRatio = averageLevel / expectedLevel
             let levelWithinBounds: Bool
-            
+
             if expectedLevel < 0.0035 {
-                levelWithinBounds = (levelRatio >= 0.55 && levelRatio <= 2.8) || abs(averageLevel - expectedLevel) <= 0.0035
+                levelWithinBounds = (levelRatio >= 0.5 && levelRatio <= 3.0) || abs(averageLevel - expectedLevel) <= 0.0035
             } else {
-                levelWithinBounds = (levelRatio >= 0.5 && levelRatio <= 2.25) || abs(averageLevel - expectedLevel) <= max(0.0045, expectedLevel * 0.6)
+                levelWithinBounds = (levelRatio >= 0.45 && levelRatio <= 2.35) || abs(averageLevel - expectedLevel) <= max(0.005, expectedLevel * 0.65)
             }
-            
+
             let highConfidence = state.hasStrongFrame && max(state.bestScore, match.score) >= state.threshold + 0.14
-            let requiredStreak = state.featureCount <= 14 ? 2 : 3
-            
-            if state.hasStrongFrame && levelWithinBounds && (state.streak >= requiredStreak || highConfidence) {
+            let competitor = orderedMatches.first { $0.key != keywordID }
+
+            let hasRequiredFrames = state.frameCount >= requiredStreak
+
+            if state.hasStrongFrame && levelWithinBounds && ((state.streak >= requiredStreak && hasRequiredFrames) || highConfidence) {
                 let finalScore = max(state.bestScore, match.score)
+                
+                if let competitor {
+                    let competitorScore = competitor.value.score
+                    let competitorThreshold = competitor.value.threshold
+                    let difference = finalScore - competitorScore
+                    if competitorScore >= competitorThreshold - acceptanceMargin * 0.5 && difference < 0.035 {
+                        let scoreString = String(format: "%.3f", Double(finalScore))
+                        let competitorString = String(format: "%.3f", Double(competitorScore))
+                        let differenceString = String(format: "%.3f", Double(difference))
+                        print("[KeywordDetector] appendFeatureLocked: Candidate suppressed for keyword \(state.name) due to competitor \(competitor.value.name) score=\(scoreString) competitorScore=\(competitorString) diff=\(differenceString)")
+                        state.framesSinceUpdate = 1
+                        state.streak = max(state.streak - 1, 0)
+                        state.nearMissCount = max(state.nearMissCount - 1, 0)
+                        if state.nearMissCount == 0 && state.bestScore < state.threshold {
+                            state.hasStrongFrame = false
+                        }
+                        updatedStates[keywordID] = state
+                        continue
+                    }
+                }
+                
                 let cooldownFrames = max(state.featureCount, featuresPerSecond * 2)
                 cooldowns[keywordID] = cooldownFrames
                 globalCooldown = max(globalCooldown, featuresPerSecond)
@@ -275,11 +355,35 @@ final class KeywordDetector {
                 break
             }
             
+            if state.hasStrongFrame {
+                if hasRequiredFrames && state.streak == requiredStreak - 1 {
+                    let scoreString = String(format: "%.3f", Double(state.bestScore))
+                    print("[KeywordDetector] appendFeatureLocked: Candidate pending streak for keyword \(state.name) score=\(scoreString) streak=\(state.streak) required=\(requiredStreak)")
+                } else if hasRequiredFrames && state.streak >= requiredStreak && !levelWithinBounds {
+                    let ratioString = String(format: "%.2fx", Double(levelRatio))
+                    let expectedString = String(format: "%.5f", Double(expectedLevel))
+                    let levelString = String(format: "%.5f", Double(averageLevel))
+                    print("[KeywordDetector] appendFeatureLocked: Candidate blocked by level for keyword \(state.name) level=\(levelString) expected=\(expectedString) ratio=\(ratioString)")
+                }
+            }
             updatedStates[keywordID] = state
         }
         
         if let detectionFromStates {
             return detectionFromStates
+        }
+        
+        if !candidateStates.isEmpty {
+            for (identifier, var state) in candidateStates where updatedStates[identifier] == nil {
+                state.framesSinceUpdate += 1
+                state.streak = max(state.streak - 1, 0)
+                if state.framesSinceUpdate <= maxInactiveFrames {
+                    updatedStates[identifier] = state
+                } else {
+                    let scoreString = String(format: "%.3f", Double(state.bestScore))
+                    print("[KeywordDetector] appendFeatureLocked: Candidate expired for keyword \(state.name) after \(state.framesSinceUpdate) silent frames bestScore=\(scoreString)")
+                }
+            }
         }
         
         candidateStates = updatedStates
@@ -319,11 +423,11 @@ final class KeywordDetector {
     }
     
     private func thresholdForFeatureCount(_ count: Int) -> Float {
-        if count < 10 { return 0.90 }
-        if count < 20 { return 0.86 }
-        if count < 35 { return 0.83 }
-        if count < 50 { return 0.80 }
-        return 0.78
+        if count < 10 { return 0.89 }
+        if count < 20 { return 0.85 }
+        if count < 35 { return 0.82 }
+        if count < 50 { return 0.79 }
+        return 0.77
     }
     
     private func withLock(_ block: () -> Void) {
@@ -355,10 +459,10 @@ final class KeywordDetector {
         var threshold = thresholdForFeatureCount(count)
         let deviation = abs(scale - 1)
         if deviation > 0.01 {
-            let penalty = min(0.035 + deviation * 0.10, 0.18)
+            let penalty = min(0.03 + deviation * 0.08, 0.14)
             threshold += penalty
         }
-        return min(max(threshold, 0.72), 0.97)
+        return min(max(threshold, 0.71), 0.96)
     }
     
     private func scaleVariants(for featureCount: Int) -> [Float] {

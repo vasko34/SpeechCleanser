@@ -46,7 +46,7 @@ final class KeywordDetector {
         var nearMissCount: Int
     }
     
-    private let acceptanceMargin: Float = 0.045
+    private let acceptanceMargin: Float = 0.06
     private let maxInactiveFrames = 3
     
     private var lock = os_unfair_lock_s()
@@ -298,10 +298,25 @@ final class KeywordDetector {
             let levelRatio = averageLevel / expectedLevel
             let levelWithinBounds: Bool
 
-            if expectedLevel < 0.0035 {
-                levelWithinBounds = (levelRatio >= 0.5 && levelRatio <= 3.0) || abs(averageLevel - expectedLevel) <= 0.0035
+            if expectedLevel < 0.0025 {
+                let minimumRatio = max(0.22, 0.38 - expectedLevel * 22)
+                let maximumRatio: Float = 3.4
+                let tolerance = max(0.0048, expectedLevel * 1.1)
+                levelWithinBounds = (levelRatio >= minimumRatio && levelRatio <= maximumRatio) || abs(averageLevel - expectedLevel) <= tolerance
+            } else if expectedLevel < 0.0065 {
+                let minimumRatio = max(0.26, 0.46 - expectedLevel * 15)
+                let maximumRatio: Float = 3.1
+                let tolerance = max(0.0055, expectedLevel * 0.95)
+                levelWithinBounds = (levelRatio >= minimumRatio && levelRatio <= maximumRatio) || abs(averageLevel - expectedLevel) <= tolerance
             } else {
-                levelWithinBounds = (levelRatio >= 0.45 && levelRatio <= 2.35) || abs(averageLevel - expectedLevel) <= max(0.005, expectedLevel * 0.65)
+                let minimumRatio = max(0.33, 0.52 - expectedLevel * 11)
+                let maximumRatio: Float = 2.45
+                let tolerance = max(0.006, expectedLevel * 0.85)
+                levelWithinBounds = (levelRatio >= minimumRatio && levelRatio <= maximumRatio) || abs(averageLevel - expectedLevel) <= tolerance
+            }
+            
+            if state.bestScore >= state.threshold - acceptanceMargin * 0.3 {
+                state.hasStrongFrame = true
             }
 
             let highConfidence = state.hasStrongFrame && max(state.bestScore, match.score) >= state.threshold + 0.14
@@ -364,6 +379,9 @@ final class KeywordDetector {
                     let expectedString = String(format: "%.5f", Double(expectedLevel))
                     let levelString = String(format: "%.5f", Double(averageLevel))
                     print("[KeywordDetector] appendFeatureLocked: Candidate blocked by level for keyword \(state.name) level=\(levelString) expected=\(expectedString) ratio=\(ratioString)")
+                } else if !hasRequiredFrames {
+                    let scoreString = String(format: "%.3f", Double(state.bestScore))
+                    print("[KeywordDetector] appendFeatureLocked: Candidate building streak for keyword \(state.name) score=\(scoreString) streak=\(state.streak) required=\(requiredStreak)")
                 }
             }
             updatedStates[keywordID] = state
@@ -423,11 +441,11 @@ final class KeywordDetector {
     }
     
     private func thresholdForFeatureCount(_ count: Int) -> Float {
-        if count < 10 { return 0.89 }
-        if count < 20 { return 0.85 }
-        if count < 35 { return 0.82 }
-        if count < 50 { return 0.79 }
-        return 0.77
+        if count < 10 { return 0.86 }
+        if count < 20 { return 0.83 }
+        if count < 35 { return 0.8 }
+        if count < 50 { return 0.78 }
+        return 0.76
     }
     
     private func withLock(_ block: () -> Void) {

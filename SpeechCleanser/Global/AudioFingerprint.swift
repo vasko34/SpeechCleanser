@@ -148,18 +148,19 @@ struct AudioFingerprint {
             features.withUnsafeMutableBufferPointer { pointer in
                 guard let base = pointer.baseAddress else { return }
                 
+                let count = pointer.count
                 var negativeMean = -mean
-                vDSP_vsadd(base, 1, &negativeMean, base, 1, vDSP_Length(features.count))
+                vDSP_vsadd(base, 1, &negativeMean, base, 1, vDSP_Length(count))
                 
                 var magnitude: Float = 0
-                vDSP_dotpr(base, 1, base, 1, &magnitude, vDSP_Length(features.count))
+                vDSP_dotpr(base, 1, base, 1, &magnitude, vDSP_Length(count))
                 let norm = sqrtf(magnitude)
                 
                 if norm > 1e-5 {
                     var inverse = 1 / norm
-                    vDSP_vsmul(base, 1, &inverse, base, 1, vDSP_Length(features.count))
+                    vDSP_vsmul(base, 1, &inverse, base, 1, vDSP_Length(count))
                 } else {
-                    for index in 0..<features.count {
+                    for index in 0..<count {
                         base[index] = 0
                     }
                 }

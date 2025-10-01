@@ -81,14 +81,16 @@ struct AudioFingerprint {
             let channelCount = Int(processingFormat.channelCount)
             var monoSamples = [Float](repeating: 0, count: frameLength)
             
-            if channelCount == 1, let base = channelData.first {
-                let pointer = UnsafeBufferPointer(start: base, count: frameLength)
+            if channelCount == 1 {
+                let channelPointer = channelData[0]
+                let pointer = UnsafeBufferPointer(start: UnsafePointer(channelPointer), count: frameLength)
                 monoSamples = Array(pointer)
             } else {
                 for frame in 0..<frameLength {
                     var sum: Float = 0
                     for channel in 0..<channelCount {
-                        sum += channelData[channel][frame]
+                        let channelPointer = channelData[channel]
+                        sum += channelPointer[frame]
                     }
                     monoSamples[frame] = sum / Float(max(channelCount, 1))
                 }

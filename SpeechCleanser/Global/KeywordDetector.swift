@@ -133,10 +133,11 @@ final class KeywordDetector {
     private func normalizeVector(_ vector: inout [Float]) -> Bool {
         guard !vector.isEmpty else { return false }
         
+        let count = vector.count
         var mean: Float = 0
         vector.withUnsafeBufferPointer { pointer in
             guard let base = pointer.baseAddress else { return }
-            vDSP_meanv(base, 1, &mean, vDSP_Length(vector.count))
+            vDSP_meanv(base, 1, &mean, vDSP_Length(count))
         }
         
         var magnitude: Float = 0
@@ -144,13 +145,13 @@ final class KeywordDetector {
             guard let base = pointer.baseAddress else { return }
             
             var negativeMean = -mean
-            vDSP_vsadd(base, 1, &negativeMean, base, 1, vDSP_Length(vector.count))
-            vDSP_dotpr(base, 1, base, 1, &magnitude, vDSP_Length(vector.count))
+            vDSP_vsadd(base, 1, &negativeMean, base, 1, vDSP_Length(count))
+            vDSP_dotpr(base, 1, base, 1, &magnitude, vDSP_Length(count))
             let norm = sqrtf(magnitude)
             
             if norm > 1e-5 {
                 var inverse = 1 / norm
-                vDSP_vsmul(base, 1, &inverse, base, 1, vDSP_Length(vector.count))
+                vDSP_vsmul(base, 1, &inverse, base, 1, vDSP_Length(count))
             }
         }
         

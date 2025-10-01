@@ -14,6 +14,7 @@ final class KeywordDetector {
         let keywordName: String
         let fingerprint: [Float]
         let featureCount: Int
+        let expectedLevel: Float
         let minimumLevel: Float
         let maximumLevel: Float
         let matchThreshold: Float
@@ -39,8 +40,11 @@ final class KeywordDetector {
         var featureCount: Int
         var scale: Float
         var threshold: Float
+        var expectedLevel: Float
+        var hasStrongFrame: Bool
     }
     
+    private let acceptanceMargin: Float = 0.045
     private var lock = os_unfair_lock_s()
     private var models: [VariationModel] = []
     private var sampleBuffer: [Float] = []
@@ -84,7 +88,7 @@ final class KeywordDetector {
         guard globalCooldown == 0 else { return nil }
         
         var nearMiss: (keywordName: String, score: Float, threshold: Float, scale: Float)?
-        var bestMatches: [UUID: (name: String, score: Float, mean: Float, featureCount: Int, scale: Float, threshold: Float)] = [:]
+        var bestMatches: [UUID: (name: String, score: Float, mean: Float, featureCount: Int, scale: Float, threshold: Float, passesThreshold: Bool, expectedLevel: Float)] = [:]
         
         for model in models {
             if cooldowns[model.keywordID] != nil { continue }
@@ -127,15 +131,41 @@ final class KeywordDetector {
                 vDSP_dotpr(base, 1, model.fingerprint, 1, &score, vDSP_Length(model.featureCount))
             }
             
-            if score >= model.matchThreshold {
+            let acceptanceThreshold = max(model.matchThreshold - acceptanceMargin, 0.70)
+            if score >= acceptanceThreshold {
+                let passesThreshold = score >= model.matchThreshold
                 if let existing = bestMatches[model.keywordID] {
                     if score > existing.score {
-                        bestMatches[model.keywordID] = (model.keywordName, score, mean, model.featureCount, model.scale, model.matchThreshold)
+                        bestMatches[model.keywordID] = (
+                            model.keywordName,
+                            score,
+                            mean,
+                            model.featureCount,
+                            model.scale,
+                            model.matchThreshold,
+                            passesThreshold,
+                            model.expectedLevel
+                        )
                     }
                 } else {
-                    bestMatches[model.keywordID] = (model.keywordName, score, mean, model.featureCount, model.scale, model.matchThreshold)
+                    bestMatches[model.keywordID] = (
+                        model.keywordName,
+                        score,
+                        mean,
+                        model.featureCount,
+                        model.scale,
+                        model.matchThreshold,
+                        passesThreshold,
+                        model.expectedLevel
+                    )
                 }
-            } else if score >= model.matchThreshold - 0.05 {
+                
+                if !passesThreshold {
+                    if nearMiss == nil || score > nearMiss!.score {
+                        nearMiss = (model.keywordName, score, model.matchThreshold, model.scale)
+                    }
+                }
+            } else if score >= model.matchThreshold - 0.02 {
                 if nearMiss == nil || score > nearMiss!.score {
                     nearMiss = (model.keywordName, score, model.matchThreshold, model.scale)
                 }
@@ -170,7 +200,9 @@ final class KeywordDetector {
                 frameCount: 0,
                 featureCount: match.featureCount,
                 scale: match.scale,
-                threshold: match.threshold
+                threshold: match.threshold,
+                expectedLevel: match.expectedLevel,
+                hasStrongFrame: false
             )
             
             let wasNewCandidate = previous == nil
@@ -183,6 +215,11 @@ final class KeywordDetector {
                 state.featureCount = match.featureCount
                 state.scale = match.scale
                 state.threshold = match.threshold
+                state.expectedLevel = match.expectedLevel
+            }
+            
+            if match.passesThreshold {
+                state.hasStrongFrame = true
             }
             
             if wasNewCandidate {
@@ -200,17 +237,30 @@ final class KeywordDetector {
             }
             
             let averageLevel = state.totalLevel / Float(max(state.frameCount, 1))
-            let immediateTrigger = match.score >= match.threshold + 0.08
+            let expectedLevel = max(state.expectedLevel, 0.0001)
+            let levelRatio = averageLevel / expectedLevel
+            let levelWithinBounds: Bool
             
-            if immediateTrigger || state.streak >= 2 {
+            if expectedLevel < 0.0035 {
+                levelWithinBounds = (levelRatio >= 0.55 && levelRatio <= 2.8) || abs(averageLevel - expectedLevel) <= 0.0035
+            } else {
+                levelWithinBounds = (levelRatio >= 0.5 && levelRatio <= 2.25) || abs(averageLevel - expectedLevel) <= max(0.0045, expectedLevel * 0.6)
+            }
+            
+            let highConfidence = state.hasStrongFrame && max(state.bestScore, match.score) >= state.threshold + 0.14
+            let requiredStreak = state.featureCount <= 14 ? 2 : 3
+            
+            if state.hasStrongFrame && levelWithinBounds && (state.streak >= requiredStreak || highConfidence) {
                 let finalScore = max(state.bestScore, match.score)
                 let cooldownFrames = max(state.featureCount, featuresPerSecond * 2)
                 cooldowns[keywordID] = cooldownFrames
                 globalCooldown = max(globalCooldown, featuresPerSecond)
                 let scoreString = String(format: "%.3f", Double(finalScore))
                 let levelString = String(format: "%.5f", Double(averageLevel))
+                let expectedString = String(format: "%.5f", Double(expectedLevel))
+                let ratioString = String(format: "%.2fx", Double(levelRatio))
                 let scaleString = String(format: "%.2fx", Double(state.scale))
-                print("[KeywordDetector] appendFeatureLocked: Detected keyword \(state.name) score=\(scoreString) level=\(levelString) scale=\(scaleString)")
+                print("[KeywordDetector] appendFeatureLocked: Detected keyword \(state.name) score=\(scoreString) level=\(levelString) expected=\(expectedString) ratio=\(ratioString) scale=\(scaleString)")
                 
                 detectionFromStates = DetectionResult(
                     keywordID: keywordID,
@@ -303,10 +353,12 @@ final class KeywordDetector {
     
     private func scaledThreshold(for count: Int, scale: Float) -> Float {
         var threshold = thresholdForFeatureCount(count)
-        if abs(scale - 1) > 0.01 {
-            threshold -= 0.03
+        let deviation = abs(scale - 1)
+        if deviation > 0.01 {
+            let penalty = min(0.035 + deviation * 0.10, 0.18)
+            threshold += penalty
         }
-        return max(threshold, 0.72)
+        return min(max(threshold, 0.72), 0.97)
     }
     
     private func scaleVariants(for featureCount: Int) -> [Float] {
@@ -343,14 +395,16 @@ final class KeywordDetector {
                 
                 let featureCount = normalized.count
                 let expected = max(variation.rms, 0.0001)
-                let minimum = max(expected * 0.28, 0.00005)
-                let maximum = max(expected * 3.2, minimum * 2.2)
+                let minimum = max(max(expected * 0.45, expected - max(expected * 0.6, 0.004)), 0.00008)
+                let dynamicUpper = max(expected * 2.4, expected + max(expected * 1.3, 0.005))
+                let maximum = max(dynamicUpper, minimum * 1.6)
 
                 let baseModel = VariationModel(
                     keywordID: keyword.id,
                     keywordName: keyword.name,
                     fingerprint: normalized,
                     featureCount: featureCount,
+                    expectedLevel: expected,
                     minimumLevel: minimum,
                     maximumLevel: maximum,
                     matchThreshold: thresholdForFeatureCount(featureCount),
@@ -372,6 +426,7 @@ final class KeywordDetector {
                         keywordName: keyword.name,
                         fingerprint: scaledFingerprint,
                         featureCount: scaledCount,
+                        expectedLevel: expected,
                         minimumLevel: minimum,
                         maximumLevel: maximum,
                         matchThreshold: scaledThreshold(for: scaledCount, scale: scale),

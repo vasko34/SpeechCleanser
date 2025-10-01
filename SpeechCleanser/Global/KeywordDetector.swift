@@ -19,6 +19,7 @@ final class KeywordDetector {
         let maximumLevel: Float
         let matchThreshold: Float
         let scale: Float
+        let variationCount: Int
     }
     
     private struct DetectionResult {
@@ -44,6 +45,7 @@ final class KeywordDetector {
         var hasStrongFrame: Bool
         var framesSinceUpdate: Int
         var nearMissCount: Int
+        var offset: Int
     }
     
     private let acceptanceMargin: Float = 0.06
@@ -92,86 +94,120 @@ final class KeywordDetector {
         guard globalCooldown == 0 else { return nil }
         
         var nearMiss: (keywordName: String, score: Float, threshold: Float, scale: Float)?
-        var bestMatches: [UUID: (name: String, score: Float, mean: Float, featureCount: Int, scale: Float, threshold: Float, passesThreshold: Bool, expectedLevel: Float)] = [:]
+        var bestMatches: [UUID: (name: String, score: Float, mean: Float, featureCount: Int, scale: Float, threshold: Float, passesThreshold: Bool, expectedLevel: Float, offset: Int)] = [:]
         
         for model in models {
             if cooldowns[model.keywordID] != nil { continue }
             if featureBuffer.count < model.featureCount { continue }
             
-            let startIndex = featureBuffer.count - model.featureCount
-            candidateBuffer.removeAll(keepingCapacity: true)
-            candidateBuffer.append(contentsOf: featureBuffer[startIndex..<featureBuffer.count])
+            let availableOffsets = featureBuffer.count - model.featureCount
+            if availableOffsets < 0 { continue }
             
-            var mean: Float = 0
-            candidateBuffer.withUnsafeBufferPointer { pointer in
-                guard let base = pointer.baseAddress else { return }
-                vDSP_meanv(base, 1, &mean, vDSP_Length(model.featureCount))
-            }
+            let searchPadding = min(max(featuresPerSecond / 2, 2), model.featureCount / 2)
+            let maxOffset = min(availableOffsets, max(searchPadding, 0))
             
-            if mean < model.minimumLevel || mean > model.maximumLevel {
-                continue
-            }
+            var bestScoreForModel: Float = -1
+            var bestMeanForModel: Float = 0
+            var bestOffsetForModel = 0
             
-            var magnitude: Float = 0
-            candidateBuffer.withUnsafeMutableBufferPointer { pointer in
-                guard let base = pointer.baseAddress else { return }
-                var negativeMean = -mean
-                vDSP_vsadd(base, 1, &negativeMean, base, 1, vDSP_Length(model.featureCount))
-                vDSP_dotpr(base, 1, base, 1, &magnitude, vDSP_Length(model.featureCount))
-                let norm = sqrtf(magnitude)
+            for offset in 0...maxOffset {
+                let endIndex = featureBuffer.count - offset
+                let startIndex = endIndex - model.featureCount
+                if startIndex < 0 || endIndex > featureBuffer.count { continue }
                 
-                if norm > 1e-5 {
-                    var inverse = 1 / norm
-                    vDSP_vsmul(base, 1, &inverse, base, 1, vDSP_Length(model.featureCount))
-                } else {
-                    magnitude = 0
+                candidateBuffer.removeAll(keepingCapacity: true)
+                candidateBuffer.append(contentsOf: featureBuffer[startIndex..<endIndex])
+                
+                var mean: Float = 0
+                candidateBuffer.withUnsafeBufferPointer { pointer in
+                    guard let base = pointer.baseAddress else { return }
+                    vDSP_meanv(base, 1, &mean, vDSP_Length(model.featureCount))
+                }
+                
+                if mean < model.minimumLevel || mean > model.maximumLevel {
+                    continue
+                }
+                
+                var magnitude: Float = 0
+                candidateBuffer.withUnsafeMutableBufferPointer { pointer in
+                    guard let base = pointer.baseAddress else { return }
+                    
+                    var negativeMean = -mean
+                    vDSP_vsadd(base, 1, &negativeMean, base, 1, vDSP_Length(model.featureCount))
+                    vDSP_dotpr(base, 1, base, 1, &magnitude, vDSP_Length(model.featureCount))
+                    let norm = sqrtf(magnitude)
+                    
+                    if norm > 1e-5 {
+                        var inverse = 1 / norm
+                        vDSP_vsmul(base, 1, &inverse, base, 1, vDSP_Length(model.featureCount))
+                    } else {
+                        magnitude = 0
+                    }
+                }
+                if magnitude <= 0 { continue }
+                
+                var score: Float = 0
+                candidateBuffer.withUnsafeBufferPointer { pointer in
+                    guard let base = pointer.baseAddress else { return }
+                    vDSP_dotpr(base, 1, model.fingerprint, 1, &score, vDSP_Length(model.featureCount))
+                }
+                
+                if score > bestScoreForModel {
+                    bestScoreForModel = score
+                    bestMeanForModel = mean
+                    bestOffsetForModel = offset
                 }
             }
-            if magnitude <= 0 { continue }
+            if bestScoreForModel < 0 { continue }
             
-            var score: Float = 0
-            candidateBuffer.withUnsafeBufferPointer { pointer in
-                guard let base = pointer.baseAddress else { return }
-                vDSP_dotpr(base, 1, model.fingerprint, 1, &score, vDSP_Length(model.featureCount))
+            let variationAdjustment: Float
+            if model.variationCount >= 4 {
+                variationAdjustment = 0.015
+            } else if model.variationCount >= 2 {
+                variationAdjustment = 0.01
+            } else {
+                variationAdjustment = 0
             }
             
-            let acceptanceThreshold = max(model.matchThreshold - acceptanceMargin, 0.70)
-            if score >= acceptanceThreshold {
-                let passesThreshold = score >= model.matchThreshold
+            let acceptanceThreshold = max(model.matchThreshold - acceptanceMargin - variationAdjustment, 0.68)
+            if bestScoreForModel >= acceptanceThreshold {
+                let passesThreshold = bestScoreForModel >= model.matchThreshold
                 if let existing = bestMatches[model.keywordID] {
-                    if score > existing.score {
+                    if bestScoreForModel > existing.score {
                         bestMatches[model.keywordID] = (
                             model.keywordName,
-                            score,
-                            mean,
+                            bestScoreForModel,
+                            bestMeanForModel,
                             model.featureCount,
                             model.scale,
                             model.matchThreshold,
                             passesThreshold,
-                            model.expectedLevel
+                            model.expectedLevel,
+                            bestOffsetForModel
                         )
                     }
                 } else {
                     bestMatches[model.keywordID] = (
                         model.keywordName,
-                        score,
-                        mean,
+                        bestScoreForModel,
+                        bestMeanForModel,
                         model.featureCount,
                         model.scale,
                         model.matchThreshold,
                         passesThreshold,
-                        model.expectedLevel
+                        model.expectedLevel,
+                        bestOffsetForModel
                     )
                 }
                 
                 if !passesThreshold {
-                    if nearMiss == nil || score > nearMiss!.score {
-                        nearMiss = (model.keywordName, score, model.matchThreshold, model.scale)
+                    if nearMiss == nil || bestScoreForModel > nearMiss!.score {
+                        nearMiss = (model.keywordName, bestScoreForModel, model.matchThreshold, model.scale)
                     }
                 }
-            } else if score >= model.matchThreshold - 0.02 {
-                if nearMiss == nil || score > nearMiss!.score {
-                    nearMiss = (model.keywordName, score, model.matchThreshold, model.scale)
+            } else if bestScoreForModel >= model.matchThreshold - 0.02 {
+                if nearMiss == nil || bestScoreForModel > nearMiss!.score {
+                    nearMiss = (model.keywordName, bestScoreForModel, model.matchThreshold, model.scale)
                 }
             }
         }
@@ -220,7 +256,8 @@ final class KeywordDetector {
                 expectedLevel: match.expectedLevel,
                 hasStrongFrame: false,
                 framesSinceUpdate: 0,
-                nearMissCount: 0
+                nearMissCount: 0,
+                offset: match.offset
             )
             
             if var previousState = previous {
@@ -242,7 +279,8 @@ final class KeywordDetector {
                         }
                     }
                 }
-                previousState.framesSinceUpdate = 0
+                previousState.framesSinceUpdate = match.offset
+                previousState.offset = match.offset
                 state = previousState
             }
             
@@ -280,17 +318,17 @@ final class KeywordDetector {
             
             let startedNew = previous == nil || didReset
             if startedNew {
-                let scoreString = String(format: "%.3f", Double(match.score))
-                let thresholdString = String(format: "%.3f", Double(match.threshold))
-                let scaleString = String(format: "%.2fx", Double(match.scale))
-                let levelString = String(format: "%.5f", Double(match.mean))
-                print("[KeywordDetector] appendFeatureLocked: Candidate started for keyword \(match.name) score=\(scoreString) threshold=\(thresholdString) level=\(levelString) scale=\(scaleString)")
+                var message = "[KeywordDetector] appendFeatureLocked: Candidate started for keyword \\(match.name) score=\\(scoreString) threshold=\\(thresholdString) level=\\(levelString) scale=\\(scaleString)"
+                if match.offset > 0 {
+                    message += " offset=\\(match.offset)"
+                }
+                print(message)
             } else if match.score > (previous?.bestScore ?? 0) {
-                let scoreString = String(format: "%.3f", Double(match.score))
-                let thresholdString = String(format: "%.3f", Double(match.threshold))
-                let scaleString = String(format: "%.2fx", Double(match.scale))
-                let levelString = String(format: "%.5f", Double(match.mean))
-                print("[KeywordDetector] appendFeatureLocked: Candidate improved for keyword \(match.name) score=\(scoreString) threshold=\(thresholdString) level=\(levelString) scale=\(scaleString) streak=\(state.streak)")
+                var message = "[KeywordDetector] appendFeatureLocked: Candidate improved for keyword \\(match.name) score=\\(scoreString) threshold=\\(thresholdString) level=\\(levelString) scale=\\(scaleString) streak=\\(state.streak)"
+                if match.offset > 0 {
+                    message += " offset=\\(match.offset)"
+                }
+                print(message)
             }
             
             let averageLevel = state.totalLevel / Float(max(state.frameCount, 1))
@@ -355,7 +393,11 @@ final class KeywordDetector {
                 let expectedString = String(format: "%.5f", Double(expectedLevel))
                 let ratioString = String(format: "%.2fx", Double(levelRatio))
                 let scaleString = String(format: "%.2fx", Double(state.scale))
-                print("[KeywordDetector] appendFeatureLocked: Detected keyword \(state.name) score=\(scoreString) level=\(levelString) expected=\(expectedString) ratio=\(ratioString) scale=\(scaleString)")
+                var message = "[KeywordDetector] appendFeatureLocked: Detected keyword \(state.name) score=\(scoreString) level=\(levelString) expected=\(expectedString) ratio=\(ratioString) scale=\(scaleString)"
+                if state.offset > 0 {
+                    message += " offset=\(state.offset)"
+                }
+                print(message)
                 
                 detectionFromStates = DetectionResult(
                     keywordID: keywordID,
@@ -384,6 +426,8 @@ final class KeywordDetector {
                     print("[KeywordDetector] appendFeatureLocked: Candidate building streak for keyword \(state.name) score=\(scoreString) streak=\(state.streak) required=\(requiredStreak)")
                 }
             }
+            state.framesSinceUpdate = match.offset
+            state.offset = match.offset
             updatedStates[keywordID] = state
         }
         
@@ -441,11 +485,11 @@ final class KeywordDetector {
     }
     
     private func thresholdForFeatureCount(_ count: Int) -> Float {
-        if count < 10 { return 0.86 }
-        if count < 20 { return 0.83 }
-        if count < 35 { return 0.8 }
-        if count < 50 { return 0.78 }
-        return 0.76
+        if count < 10 { return 0.85 }
+        if count < 18 { return 0.82 }
+        if count < 28 { return 0.79 }
+        if count < 42 { return 0.77 }
+        return 0.75
     }
     
     private func withLock(_ block: () -> Void) {
@@ -473,14 +517,41 @@ final class KeywordDetector {
         return result
     }
     
-    private func scaledThreshold(for count: Int, scale: Float) -> Float {
+    private func adjustedThreshold(for count: Int, variations: Int) -> Float {
         var threshold = thresholdForFeatureCount(count)
+        
+        if count >= 18 { threshold -= 0.008 }
+        if count >= 28 { threshold -= 0.006 }
+        if count >= 42 { threshold -= 0.004 }
+        
+        if variations >= 4 {
+            threshold -= 0.02
+        } else if variations >= 2 {
+            threshold -= 0.012
+        }
+        
+        return min(max(threshold, 0.72), 0.9)
+    }
+    
+    private func scaledThreshold(for count: Int, scale: Float, base: Float, variations: Int) -> Float {
+        var threshold = base
         let deviation = abs(scale - 1)
         if deviation > 0.01 {
-            let penalty = min(0.03 + deviation * 0.08, 0.14)
+            let penalty = min(0.028 + deviation * 0.07, 0.12)
             threshold += penalty
         }
-        return min(max(threshold, 0.71), 0.96)
+        
+        if variations >= 4 {
+            threshold -= 0.014
+        } else if variations >= 2 {
+            threshold -= 0.008
+        }
+        
+        if count >= 32 {
+            threshold -= 0.004
+        }
+        
+        return min(max(threshold, 0.7), 0.93)
     }
     
     private func scaleVariants(for featureCount: Int) -> [Float] {
@@ -507,8 +578,13 @@ final class KeywordDetector {
         var didAssignHopConfiguration = false
         
         for keyword in keywords where keyword.isEnabled {
+            let activeVariations = keyword.variations.filter { !$0.fingerprint.isEmpty }
+            guard !activeVariations.isEmpty else { continue }
+            
             var enabledVariationCount = 0
-            for variation in keyword.variations where !variation.fingerprint.isEmpty {
+            let variationCount = activeVariations.count
+            
+            for variation in activeVariations {
                 var normalized = variation.fingerprint
                 if !normalizeVector(&normalized) {
                     print("[KeywordDetector][ERROR] configure: Skipping variation \(variation.id.uuidString) for keyword \(keyword.name) due to invalid fingerprint")
@@ -520,6 +596,7 @@ final class KeywordDetector {
                 let minimum = max(max(expected * 0.45, expected - max(expected * 0.6, 0.004)), 0.00008)
                 let dynamicUpper = max(expected * 2.4, expected + max(expected * 1.3, 0.005))
                 let maximum = max(dynamicUpper, minimum * 1.6)
+                let baseThreshold = adjustedThreshold(for: featureCount, variations: variationCount)
 
                 let baseModel = VariationModel(
                     keywordID: keyword.id,
@@ -529,8 +606,9 @@ final class KeywordDetector {
                     expectedLevel: expected,
                     minimumLevel: minimum,
                     maximumLevel: maximum,
-                    matchThreshold: thresholdForFeatureCount(featureCount),
-                    scale: 1
+                    matchThreshold: baseThreshold,
+                    scale: 1,
+                    variationCount: variationCount
                 )
                 
                 newModels.append(baseModel)
@@ -543,6 +621,8 @@ final class KeywordDetector {
                     var scaledFingerprint = resampleFingerprint(normalized, targetCount: scaledCount)
                     if !normalizeVector(&scaledFingerprint) { continue }
                     
+                    let scaledBase = adjustedThreshold(for: scaledCount, variations: variationCount)
+                    let threshold = scaledThreshold(for: scaledCount, scale: scale, base: scaledBase, variations: variationCount)
                     let scaledModel = VariationModel(
                         keywordID: keyword.id,
                         keywordName: keyword.name,
@@ -551,8 +631,9 @@ final class KeywordDetector {
                         expectedLevel: expected,
                         minimumLevel: minimum,
                         maximumLevel: maximum,
-                        matchThreshold: scaledThreshold(for: scaledCount, scale: scale),
-                        scale: scale
+                        matchThreshold: threshold,
+                        scale: scale,
+                        variationCount: variationCount
                     )
                     
                     newModels.append(scaledModel)

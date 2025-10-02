@@ -87,29 +87,13 @@ class ViewController: UIViewController {
     }
     
     private func updateToggleButtonTitle() {
-        let title = AudioManager.shared.running ? "Stop Background Listening" : "Start Background Listening"
+        // should swap between Start and Stop
+        let title = "Start Background Listening"
         toggleButton.setTitle(title, for: .normal)
     }
     
     @objc private func toggleListening() {
-        if AudioManager.shared.running {
-            AudioManager.shared.stop()
-            updateToggleButtonTitle()
-            print("[ViewController] toggleListening: Stopped listening")
-        } else {
-            AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-                DispatchQueue.main.async {
-                    if granted {
-                        AudioManager.shared.start()
-                        self?.updateToggleButtonTitle()
-                        print("[ViewController] toggleListening: Started listening")
-                    } else {
-                        self?.showAlert(title: "Microphone Denied", message: "Enable mic access in Settings.")
-                        print("[ViewController][ERROR] toggleListening: Microphone permission denied")
-                    }
-                }
-            }
-        }
+        // toggle background and foreground listening
     }
     
     @objc private func openKeywordsTableViewController() {

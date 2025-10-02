@@ -35,17 +35,7 @@ class VariationCell: UITableViewCell {
     
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     
-    private func formattedDuration(_ duration: TimeInterval) -> String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.minute, .second]
-        formatter.unitsStyle = .abbreviated
-        formatter.zeroFormattingBehavior = .pad
-        return formatter.string(from: duration) ?? String(format: "%.2fs", duration)
-    }
-    
     func configure(with variation: Variation, index: Int) {
-        let durationText = formattedDuration(variation.duration)
-        titleLabel.text = "Variation \(index) – \(durationText)"
-        print("[VariationCell] configure: Showing variation index \(index) duration=\(durationText)")
+        titleLabel.text = ""
     }
 }

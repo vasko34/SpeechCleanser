@@ -13,11 +13,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         NotificationManager.requestAuthorization()
-        AudioManager.shared.onKeywordDetected = { keyword in
-            NotificationManager.sendDetectionNotification(for: keyword)
-            PavlokService.shared.sendZap(for: keyword)
-            print("[AppDelegate] didFinishLaunchingWithOptions: Keyword detected callback for \(keyword.name)")
-        }
         
         print("[AppDelegate] didFinishLaunchingWithOptions: Launch complete")
         return true

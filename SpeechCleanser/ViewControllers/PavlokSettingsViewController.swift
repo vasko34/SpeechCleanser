@@ -38,14 +38,6 @@ class PavlokSettingsViewController: UIViewController {
         
         apiKeyField.placeholder = "API Token"
         apiKeyField.borderStyle = .roundedRect
-        apiKeyField.autocapitalizationType = .none
-        apiKeyField.autocorrectionType = .no
-        apiKeyField.spellCheckingType = .no
-        apiKeyField.smartQuotesType = .no
-        apiKeyField.smartDashesType = .no
-        apiKeyField.returnKeyType = .next
-        apiKeyField.textContentType = .none
-        apiKeyField.keyboardType = .asciiCapable
         apiKeyField.enablesReturnKeyAutomatically = true
         apiKeyField.delegate = self
         apiKeyField.text = initialAPIKey
@@ -53,12 +45,6 @@ class PavlokSettingsViewController: UIViewController {
         intensityField.placeholder = "Intensity"
         intensityField.borderStyle = .roundedRect
         intensityField.keyboardType = .numberPad
-        intensityField.autocorrectionType = .no
-        intensityField.spellCheckingType = .no
-        intensityField.smartDashesType = .no
-        intensityField.smartQuotesType = .no
-        intensityField.returnKeyType = .done
-        intensityField.textContentType = .none
         intensityField.enablesReturnKeyAutomatically = true
         intensityField.delegate = self
         intensityField.text = String(initialIntensity)

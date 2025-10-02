@@ -30,26 +30,7 @@ class KeywordsTableViewController: UITableViewController {
     }
     
     @objc private func addWord() {
-        let controller = KeywordNameEntryViewController()
-        controller.onSave = { [weak self] name in
-            guard let self else { return }
-            
-            self.persistenceQueue.async {
-                var list = KeywordStore.shared.load()
-                list.append(Keyword(name: name, isEnabled: true, variations: []))
-                KeywordStore.shared.save(list)
-                AudioManager.shared.reloadKeywords(list)
-                
-                DispatchQueue.main.async {
-                    self.keywords = list
-                    self.tableView.reloadData()
-                    print("[KeywordsTableViewController] addWord: Added keyword \(name)")
-                }
-            }
-        }
-        
-        let navigation = UINavigationController(rootViewController: controller)
-        present(navigation, animated: true)
+        // show alert to enter new word
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -70,7 +51,6 @@ class KeywordsTableViewController: UITableViewController {
             let updated = self.keywords
             self.persistenceQueue.async {
                 KeywordStore.shared.save(updated)
-                AudioManager.shared.reloadKeywords(updated)
             }
             print("[KeywordsTableViewController] cellForRowAt: Toggled keyword \(keyword.name) to \(isOn)")
         }
@@ -93,27 +73,7 @@ class KeywordsTableViewController: UITableViewController {
         print("[KeywordsTableViewController] commitForRowAt: Deleted keyword \(keyword.name)")
         
         persistenceQueue.async {
-            var list = KeywordStore.shared.load()
-            if let idx = list.firstIndex(where: { $0.id == keyword.id }) {
-                let removed = list.remove(at: idx)
-                KeywordStore.shared.save(list)
-                AudioManager.shared.reloadKeywords(list)
-                
-                for variation in removed.variations {
-                    let fileURL = KeywordStore.fileURL(for: variation.filePath)
-                    
-                    do {
-                        try FileManager.default.removeItem(at: fileURL)
-                        print("[KeywordsTableViewController] commitForRowAt: Removed file \(variation.filePath)")
-                    } catch {
-                        print("[KeywordsTableViewController][ERROR] commitForRowAt: FileManager failed to remove item with error: \(error.localizedDescription)")
-                    }
-                }
-                
-                DispatchQueue.main.async { [weak self] in
-                    self?.keywords = list
-                }
-            }
+            // delete keyword
         }
     }
 }

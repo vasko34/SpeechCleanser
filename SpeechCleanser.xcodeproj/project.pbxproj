@@ -195,6 +195,16 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lc++",
+					"-framework",
+					Accelerate,
+					"-framework",
+					AudioToolbox,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					CoreAudio,
+					"-framework",
+					CoreMedia,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.SpeechCleanser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -243,6 +253,16 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lc++",
+					"-framework",
+					Accelerate,
+					"-framework",
+					AudioToolbox,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					CoreAudio,
+					"-framework",
+					CoreMedia,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.SpeechCleanser;
 				PRODUCT_NAME = "$(TARGET_NAME)";

@@ -20,6 +20,7 @@ final class SpeechDetectionService {
     
     private var whisperProcessor: WhisperRealtimeProcessor?
     private var keywordCache: [Keyword] = []
+    private var normalizedVariationCache: [UUID: [(variation: Variation, normalized: String)]] = [:]
     private var detectionCooldowns: [UUID: Date] = [:]
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var sessionConfigured = false
@@ -43,37 +44,24 @@ final class SpeechDetectionService {
     
     private func configureModel() {
         let bundle = Bundle.main
-        let preferredModelName = "ggml-small-q5_0"
-        let fallbackModelName = "ggml-small-q5_1"
-        
+        let modelName = "ggml-small-q5_1"
         var locatedURL: URL?
-        var usedFallback = false
         
-        if let direct = bundle.url(forResource: preferredModelName, withExtension: "bin") {
+        if let direct = bundle.url(forResource: modelName, withExtension: "bin") {
             locatedURL = direct
-        } else if let subpath = bundle.url(forResource: preferredModelName, withExtension: "bin", subdirectory: "WhisperResources") {
+        } else if let subpath = bundle.url(forResource: modelName, withExtension: "bin", subdirectory: "WhisperResources") {
             locatedURL = subpath
-        } else if let fallback = bundle.url(forResource: fallbackModelName, withExtension: "bin") {
-            locatedURL = fallback
-            usedFallback = true
-        } else if let fallbackSubpath = bundle.url(forResource: fallbackModelName, withExtension: "bin", subdirectory: "WhisperResources") {
-            locatedURL = fallbackSubpath
-            usedFallback = true
         }
         
         guard let url = locatedURL else {
-            print("[SpeechDetectionService][ERROR] configureModel: Model ggml-small-q5_0.bin not found in bundle or WhisperResources")
+            print("[SpeechDetectionService][ERROR] configureModel: Model ggml-small-q5_1.bin not found in bundle or WhisperResources")
             return
         }
         
         let configuration = WhisperRealtimeProcessor.Configuration(windowDuration: windowDuration, hopDuration: hopDuration, enableVAD: true)
         whisperProcessor = WhisperRealtimeProcessor(modelURL: url, configuration: configuration)
         if whisperProcessor?.isOperational == true {
-            if usedFallback {
-                print("[SpeechDetectionService][ERROR] configureModel: Preferred model missing, using fallback model \(url.lastPathComponent)")
-            } else {
-                print("[SpeechDetectionService] configureModel: Whisper model loaded from \(url.lastPathComponent)")
-            }
+            print("[SpeechDetectionService] configureModel: Whisper model loaded from \(url.lastPathComponent)")
         } else {
             print("[SpeechDetectionService][ERROR] configureModel: Failed to initialize whisper processor with model at \(url)")
         }
@@ -151,7 +139,10 @@ final class SpeechDetectionService {
         if !windows.isEmpty {
             print("[SpeechDetectionService] handleAudioBuffer: Generated \(windows.count) windows from \(samples.count) samples")
         }
-        guard let processor = whisperProcessor else { return }
+        guard let processor = whisperProcessor else {
+            print("[SpeechDetectionService][ERROR] handleAudioBuffer: Whisper processor unavailable during audio handling")
+            return
+        }
         guard !keywordCache.isEmpty else {
             print("[SpeechDetectionService] handleAudioBuffer: Skipping transcription because keyword cache is empty")
             return
@@ -170,9 +161,26 @@ final class SpeechDetectionService {
     private func reloadKeywordCache() {
         let keywords = KeywordStore.shared.load().filter { $0.isEnabled && !$0.variations.isEmpty }
         keywordCache = keywords
+        normalizedVariationCache.removeAll(keepingCapacity: true)
+        
+        for keyword in keywords {
+            var seen: Set<String> = []
+            let entries = keyword.variations.compactMap { variation -> (Variation, String)? in
+                let normalized = variation.name.normalizedForKeywordMatching()
+                guard !normalized.isEmpty else { return nil }
+                guard seen.insert(normalized).inserted else {
+                    print("[SpeechDetectionService] reloadKeywordCache: Skipping duplicate normalized variation for keyword \(keyword.name)")
+                    return nil
+                }
+                return (variation, normalized)
+            }
+            normalizedVariationCache[keyword.id] = entries
+        }
+        
         detectionCooldowns = detectionCooldowns.filter { Date().timeIntervalSince($0.value) < cooldownInterval }
-        let variations = keywords.reduce(0) { $0 + $1.variations.count }
-        print("[SpeechDetectionService] reloadKeywordCache: Cached \(keywords.count) enabled keywords with \(variations) variations")
+        let variations = keywords.reduce(0) { $0 + ($1.variations.count) }
+        let normalizedCount = normalizedVariationCache.values.reduce(0) { $0 + $1.count }
+        print("[SpeechDetectionService] reloadKeywordCache: Cached \(keywords.count) enabled keywords with \(variations) variations (normalized=\(normalizedCount))")
     }
     
     private func evaluateTranscription(_ transcript: String) {
@@ -182,17 +190,24 @@ final class SpeechDetectionService {
         
         let now = Date()
         for keyword in keywordCache {
-            for variation in keyword.variations {
-                let normalizedVariation = variation.name.normalizedForKeywordMatching()
-                guard !normalizedVariation.isEmpty else { continue }
-                
-                if normalizedTranscript.contains(normalizedVariation) {
+            guard let normalizedEntries = normalizedVariationCache[keyword.id] else {
+                print("[SpeechDetectionService][ERROR] evaluateTranscription: Missing normalized variations for keyword \(keyword.name)")
+                continue
+            }
+            guard !normalizedEntries.isEmpty else {
+                print("[SpeechDetectionService] evaluateTranscription: Normalized variation list empty for keyword \(keyword.name)")
+                continue
+            }
+            
+            for entry in normalizedEntries {
+                if normalizedTranscript.contains(entry.normalized) {
                     if let last = detectionCooldowns[keyword.id], now.timeIntervalSince(last) < cooldownInterval {
+                        print("[SpeechDetectionService] evaluateTranscription: Cooldown active for keyword \(keyword.name)")
                         continue
                     }
                     
                     detectionCooldowns[keyword.id] = now
-                    handleDetection(keyword: keyword, variation: variation, transcript: transcript)
+                    handleDetection(keyword: keyword, variation: entry.variation, transcript: transcript)
                     return
                 }
             }
@@ -291,6 +306,10 @@ final class SpeechDetectionService {
             print("[SpeechDetectionService] startListening: Microphone permission granted")
             self.processingQueue.async {
                 self.reloadKeywordCache()
+                self.slidingBuffer.reset()
+                self.detectionCooldowns.removeAll()
+                print("[SpeechDetectionService] startListening: Cleared buffers and cooldowns prior to session start")
+                
                 let sessionConfigured = self.configureSession()
                 guard sessionConfigured else {
                     DispatchQueue.main.async {

@@ -10,7 +10,9 @@ import Foundation
 struct SlidingWindowBuffer {
     private let windowSamples: Int
     private let hopSamples: Int
+    
     private var buffer: [Float] = []
+    private var startIndex: Int = 0
     
     init(windowDuration: TimeInterval, hopDuration: TimeInterval, sampleRate: Int) {
         let window = max(Int(windowDuration * Double(sampleRate)), 1)
@@ -24,11 +26,16 @@ struct SlidingWindowBuffer {
         buffer.append(contentsOf: samples)
         var windows: [[Float]] = []
         
-        while buffer.count >= windowSamples {
-            let window = Array(buffer[0..<windowSamples])
+        while buffer.count - startIndex >= windowSamples {
+            let upperBound = startIndex + windowSamples
+            let window = Array(buffer[startIndex..<upperBound])
             windows.append(window)
-            let removeCount = min(hopSamples, buffer.count)
-            buffer.removeFirst(removeCount)
+            startIndex = min(startIndex + hopSamples, buffer.count)
+        }
+        
+        if startIndex > 0 && startIndex >= buffer.count / 2 {
+            buffer.removeFirst(startIndex)
+            startIndex = 0
         }
         
         return windows
@@ -36,5 +43,6 @@ struct SlidingWindowBuffer {
     
     mutating func reset() {
         buffer.removeAll(keepingCapacity: true)
+        startIndex = 0
     }
 }

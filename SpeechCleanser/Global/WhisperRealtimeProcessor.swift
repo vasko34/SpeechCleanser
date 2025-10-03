@@ -16,6 +16,7 @@ class WhisperRealtimeProcessor {
     
     private let inferenceQueue = DispatchQueue(label: "WhisperRealtimeProcessor.inference", qos: .userInitiated)
     private let context: OpaquePointer
+    private let state: OpaquePointer
     private let baseSampleRate: Int32 = 16_000
     private let maxTokens: Int32 = 64
     private let configuration: Configuration
@@ -42,8 +43,17 @@ class WhisperRealtimeProcessor {
         }
         
         context = loadedContext
+        guard let allocatedState = whisper_init_state(loadedContext) else {
+            whisper_free(loadedContext)
+            print("[WhisperRealtimeProcessor][ERROR] init: whisper_init_state failed for model \(modelURL.lastPathComponent)")
+            return nil
+        }
+        
+        state = allocatedState
         isOperational = true
-        print("[WhisperRealtimeProcessor] init: whisper.cpp ready with model \(modelURL.lastPathComponent)")
+        
+        let vadStatus = configuration.enableVAD ? "enabled" : "disabled"
+        print("[WhisperRealtimeProcessor] init: whisper.cpp ready with model \(modelURL.lastPathComponent) VAD=\(vadStatus) window=\(configuration.windowDuration)s hop=\(configuration.hopDuration)s")
         
         if let systemInfoPointer = whisper_print_system_info() {
             let systemInfo = String(cString: systemInfoPointer)
@@ -52,6 +62,7 @@ class WhisperRealtimeProcessor {
     }
     
     deinit {
+        whisper_free_state(state)
         whisper_free(context)
         print("[WhisperRealtimeProcessor] deinit: Released whisper context for model \(modelURL.lastPathComponent)")
     }
@@ -83,26 +94,37 @@ class WhisperRealtimeProcessor {
             params.single_segment = true
             params.no_context = true
             params.no_timestamps = true
+            params.n_max_text_ctx = 0
             params.temperature = 0.2
             params.temperature_inc = 0.2
             params.n_threads = Int32(max(1, ProcessInfo.processInfo.processorCount - 1))
             params.max_tokens = self.maxTokens
             params.audio_ctx = Int32(self.configuration.windowDuration * Double(self.baseSampleRate))
-            params.speed_up = false
             params.detect_language = true
             params.duration_ms = Int32(self.configuration.windowDuration * 1000.0)
             params.offset_ms = 0
             params.prompt_tokens = nil
             params.prompt_n_tokens = 0
+            params.language = nil
+            params.entropy_thold = 2.4
+            params.logprob_thold = -1.0
+            params.no_speech_thold = 0.35
             
             if self.configuration.enableVAD {
-                params.enable_vad = true
-                params.vad_thold = 0.6
-                params.vad_min_duration_ms = Int32(max(self.configuration.hopDuration * 1000.0, 100))
-                params.vad_max_duration_ms = Int32(self.configuration.windowDuration * 1000.0)
-                params.vad_delay_ms = Int32(self.configuration.hopDuration * 1000.0)
+                params.vad = true
+                params.vad_model_path = nil
+                var vadParams = whisper_vad_default_params()
+                vadParams.threshold = 0.60
+                vadParams.min_speech_duration_ms = Int32(max(self.configuration.hopDuration * 1000.0, 80.0))
+                vadParams.min_silence_duration_ms = 200
+                vadParams.max_speech_duration_s = Float(self.configuration.windowDuration)
+                vadParams.speech_pad_ms = 120
+                vadParams.samples_overlap = Float(self.configuration.hopDuration)
+                params.vad_params = vadParams
+                print("[WhisperRealtimeProcessor] transcribe: VAD enabled threshold=\(vadParams.threshold) minSpeechMs=\(vadParams.min_speech_duration_ms) padMs=\(vadParams.speech_pad_ms)")
             } else {
-                params.enable_vad = false
+                params.vad = false
+                print("[WhisperRealtimeProcessor] transcribe: VAD disabled for current request")
             }
             
             let start = CFAbsoluteTimeGetCurrent()
@@ -114,10 +136,20 @@ class WhisperRealtimeProcessor {
                 print("[WhisperRealtimeProcessor][ERROR] transcribe: Sample buffer unexpectedly empty prior to inference")
                 return
             }
+                      
+            if requestedSamples > Int(Int32.max) {
+                completionQueue.async {
+                    completion("")
+                }
+                print("[WhisperRealtimeProcessor][ERROR] transcribe: Sample buffer exceeds Int32 capacity with \(requestedSamples) samples")
+                return
+            }
+                      
             let resultCode: Int32 = samples.withUnsafeBufferPointer { bufferPointer in
                 guard let baseAddress = bufferPointer.baseAddress else { return Int32(-99) }
+                
                 whisper_reset_timings(self.context)
-                return whisper_full(self.context, params, baseAddress, Int32(bufferPointer.count))
+                return whisper_full_with_state(self.context, self.state, params, baseAddress, Int32(bufferPointer.count))
             }
             
             if resultCode != 0 {
@@ -128,7 +160,7 @@ class WhisperRealtimeProcessor {
                 return
             }
             
-            let segmentCount = whisper_full_n_segments(self.context)
+            let segmentCount = whisper_full_n_segments_from_state(self.state)
             if segmentCount <= 0 {
                 print("[WhisperRealtimeProcessor] transcribe: No segments detected in current window")
                 completionQueue.async {
@@ -141,7 +173,7 @@ class WhisperRealtimeProcessor {
             transcript.reserveCapacity(256)
             
             for index in 0..<segmentCount {
-                if let textPointer = whisper_full_get_segment_text(self.context, index) {
+                if let textPointer = whisper_full_get_segment_text_from_state(self.state, index) {
                     let segment = String(cString: textPointer)
                     transcript.append(segment)
                 }

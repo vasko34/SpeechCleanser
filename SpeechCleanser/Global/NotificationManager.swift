@@ -12,8 +12,10 @@ enum NotificationManager {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error = error {
                 print("[NotificationManager][ERROR] requestAuthorization: Notification authorization failed with error: \(error.localizedDescription)")
+            } else if granted {
+                print("[NotificationManager] requestAuthorization: Notifications granted: true")
             } else {
-                print("[NotificationManager] requestAuthorization: Notifications granted: \(granted)")
+                print("[NotificationManager][ERROR] requestAuthorization: Notifications denied by user")
             }
         }
     }

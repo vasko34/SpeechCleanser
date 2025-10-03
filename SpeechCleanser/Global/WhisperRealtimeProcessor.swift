@@ -174,7 +174,6 @@ class WhisperRealtimeProcessor {
                 return "bg".withCString { pointer in
                     var localParams = params
                     localParams.language = pointer
-                    whisper_reset_state(self.state)
                     whisper_reset_timings(self.context)
                     return whisper_full_with_state(self.context, self.state, localParams, baseAddress, Int32(bufferPointer.count))
                 }

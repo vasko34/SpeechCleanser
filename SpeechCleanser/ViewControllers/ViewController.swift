@@ -13,6 +13,7 @@ class ViewController: UIViewController {
     private let manageWordsButton = UIButton(type: .system)
     private let pavlokConfigButton = UIButton(type: .system)
     private let pavlokStatusLabel = UILabel()
+    private var listeningObserver: NSObjectProtocol?
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -60,7 +61,18 @@ class ViewController: UIViewController {
             pavlokStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24)
         ])
         
+        listeningObserver = NotificationCenter.default.addObserver(forName: .speechDetectionStateChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.updateToggleButtonTitle()
+        }
+        
         print("[ViewController] viewDidLoad: UI configured")
+    }
+    
+    deinit {
+        if let observer = listeningObserver {
+            NotificationCenter.default.removeObserver(observer)
+            print("[ViewController] deinit: Removed listening observer")
+        }
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -87,13 +99,31 @@ class ViewController: UIViewController {
     }
     
     private func updateToggleButtonTitle() {
-        // should swap between Start and Stop
-        let title = "Start Background Listening"
+        let isListening = SpeechDetectionService.shared.isListening
+        let title = isListening ? "Stop Background Listening" : "Start Background Listening"
         toggleButton.setTitle(title, for: .normal)
+        print("[ViewController] updateToggleButtonTitle: Listening state=\(isListening)")
     }
     
     @objc private func toggleListening() {
-        // toggle background and foreground listening
+        let manager = SpeechDetectionService.shared
+        if manager.isListening {
+            manager.stopListening()
+            updateToggleButtonTitle()
+            print("[ViewController] toggleListening: Requested stop")
+        } else {
+            manager.startListening { [weak self] success in
+                DispatchQueue.main.async {
+                    self?.updateToggleButtonTitle()
+                    if success {
+                        print("[ViewController] toggleListening: Listening started successfully")
+                    } else {
+                        self?.showAlert(title: "Microphone", message: "Unable to start background listening. Please check permissions and model availability.")
+                        print("[ViewController][ERROR] toggleListening: Failed to start listening")
+                    }
+                }
+            }
+        }
     }
     
     @objc private func openKeywordsTableViewController() {

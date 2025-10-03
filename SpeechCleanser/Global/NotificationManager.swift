@@ -18,7 +18,7 @@ enum NotificationManager {
         }
     }
     
-    static func sendDetectionNotification(for keyword: Keyword) {
+    static func sendDetectionNotification(for keyword: Keyword, variation: Variation) {
         let content = UNMutableNotificationContent()
         content.title = "Keyword Detected"
         
@@ -26,7 +26,7 @@ enum NotificationManager {
         formatter.dateFormat = "HH:mm"
         
         let time = formatter.string(from: Date())
-        content.body = "\(keyword.name) triggered a zap at \(time)."
+        content.body = "\(keyword.name) (variation: \(variation.name)) triggered a zap at \(time)."
         content.sound = .default
         
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
@@ -36,6 +36,6 @@ enum NotificationManager {
             }
         }
         
-        print("[NotificationManager] sendDetectionNotification: Scheduled notification for keyword \(keyword.name)")
+        print("[NotificationManager] sendDetectionNotification: Scheduled notification for keyword \(keyword.name) variation \(variation.name)")
     }
 }

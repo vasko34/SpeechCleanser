@@ -36,6 +36,7 @@ class VariationCell: UITableViewCell {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     
     func configure(with variation: Variation, index: Int) {
-        titleLabel.text = ""
+        titleLabel.text = variation.name
+        print("[VariationCell] configure: Displaying variation \(variation.name) at index \(index)")
     }
 }

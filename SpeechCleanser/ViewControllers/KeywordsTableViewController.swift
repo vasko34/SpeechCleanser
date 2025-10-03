@@ -18,6 +18,7 @@ class KeywordsTableViewController: UITableViewController {
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addWord))
         tableView.register(KeywordCell.self, forCellReuseIdentifier: KeywordCell.reuseID)
+        tableView.tableFooterView = UIView()
         print("[KeywordsTableViewController] viewDidLoad: Initialized")
     }
     
@@ -29,8 +30,39 @@ class KeywordsTableViewController: UITableViewController {
         print("[KeywordsTableViewController] viewWillAppear: Reloaded with \(keywords.count) keywords")
     }
     
+    private func persistKeywords(_ keywords: [Keyword]) {
+        let keywordsCopy = keywords
+        persistenceQueue.async {
+            KeywordStore.shared.save(keywordsCopy)
+        }
+    }
+    
     @objc private func addWord() {
-        // show alert to enter new word
+        let alert = UIAlertController(title: "New Keyword", message: "Enter the keyword name.", preferredStyle: .alert)
+        alert.addTextField { textField in
+            textField.placeholder = "Keyword name"
+            textField.autocapitalizationType = .sentences
+        }
+        
+        let saveAction = UIAlertAction(title: "Save", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            guard let value = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+                print("[KeywordsTableViewController][ERROR] addWord: Attempted to add empty keyword")
+                return
+            }
+            
+            let keyword = Keyword(name: value, isEnabled: true, variations: [])
+            self.keywords.insert(keyword, at: 0)
+            self.tableView.insertRows(at: [IndexPath(row: 0, section: 0)], with: .automatic)
+            self.persistKeywords(self.keywords)
+            print("[KeywordsTableViewController] addWord: Added keyword \(value)")
+        }
+        
+        alert.addAction(saveAction)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        present(alert, animated: true)
+        print("[KeywordsTableViewController] addWord: Presented keyword creation alert")
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -73,7 +105,7 @@ class KeywordsTableViewController: UITableViewController {
         print("[KeywordsTableViewController] commitForRowAt: Deleted keyword \(keyword.name)")
         
         persistenceQueue.async {
-            // delete keyword
+            KeywordStore.shared.deleteKeyword(withID: keyword.id)
         }
     }
 }

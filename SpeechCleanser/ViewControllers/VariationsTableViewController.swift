@@ -6,18 +6,11 @@
 //
 
 import UIKit
-import AVFoundation
 
 class VariationsTableViewController: UITableViewController {
     private let persistenceQueue = DispatchQueue(label: "VariationsTableViewController.persistence", qos: .userInitiated)
     private let keywordID: UUID
-    private var player: AVAudioPlayer?
-    private var recorder: AVAudioRecorder?
-    private var recordStart: Date?
-    private var recordAlert: UIAlertController?
-    private var recordURL: URL?
     private var keyword: Keyword?
-    private var resumeListeningAfterRecording = false
     
     init(keywordID: UUID) {
         self.keywordID = keywordID
@@ -50,15 +43,49 @@ class VariationsTableViewController: UITableViewController {
         print("[VariationsTableViewController] reloadKeyword: Keyword has \(self.keyword?.variations.count ?? 0) variations")
     }
     
-    private func showAlert(title: String, message: String) {
+    private func presentVariationEditor(title: String, message: String, defaultValue: String?, completion: @escaping (String) -> Void) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        alert.addTextField { textField in
+            textField.placeholder = "Variation"
+            textField.autocapitalizationType = .none
+            textField.text = defaultValue
+        }
+        
+        let saveAction = UIAlertAction(title: "Save", style: .default) { _ in
+            guard let text = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+                print("[VariationsTableViewController][ERROR] presentVariationEditor: Attempted to save empty variation")
+                return
+            }
+            completion(text)
+        }
+        
+        alert.addAction(saveAction)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
         present(alert, animated: true)
-        print("[VariationsTableViewController] showAlert: Presented alert with title \(title)")
+        print("[VariationsTableViewController] presentVariationEditor: Presented editor titled \(title)")
+    }
+    
+    private func persist(keyword: Keyword) {
+        let keywordCopy = keyword
+        persistenceQueue.async {
+            KeywordStore.shared.update(keywordCopy)
+        }
     }
     
     @objc private func addVariation() {
-        
+        presentVariationEditor(title: "Add Variation", message: "Enter a spoken variation for this keyword.", defaultValue: nil) { [weak self] value in
+            guard let self = self else { return }
+            guard var keyword = self.keyword else { return }
+            
+            let variation = Variation(name: value)
+            keyword.variations.insert(variation, at: 0)
+            self.keyword = keyword
+            
+            self.tableView.insertRows(at: [IndexPath(row: 0, section: 0)], with: .automatic)
+            self.persist(keyword: keyword)
+            print("[VariationsTableViewController] addVariation: Added variation \(value)")
+        }
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -76,26 +103,32 @@ class VariationsTableViewController: UITableViewController {
     }
     
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        // edit variation
+        guard let variation = keyword?.variations[indexPath.row] else { return }
+        
+        presentVariationEditor(title: "Edit Variation", message: "Update the variation text.", defaultValue: variation.name) { [weak self] value in
+            guard let self = self else { return }
+            guard var keyword = self.keyword else { return }
+            
+            keyword.variations[indexPath.row].name = value
+            self.keyword = keyword
+            self.tableView.reloadRows(at: [indexPath], with: .automatic)
+            self.persist(keyword: keyword)
+            print("[VariationsTableViewController] didSelectRowAt: Updated variation at index \(indexPath.row)")
+        }
+        
+        tableView.deselectRow(at: indexPath, animated: true)
     }
     
     override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
         guard editingStyle == .delete else { return }
         guard let keyword = keyword else { return }
         
-        let updatedKeyword = keyword
+        var updatedKeyword = keyword
+        let removed = updatedKeyword.variations.remove(at: indexPath.row)
         self.keyword = updatedKeyword
         tableView.deleteRows(at: [indexPath], with: .automatic)
-        print("[VariationsTableViewController] commitForRowAt: Deleted variation at index \(indexPath.row)")
-        
-        persistenceQueue.async { [weak self] in
-            guard let self = self else { return }
-            
-            var list = KeywordStore.shared.load()
-            if let index = list.firstIndex(where: { $0.id == self.keywordID }) {
-                list[index] = updatedKeyword
-                KeywordStore.shared.save(list)
-            }
-        }
+        print("[VariationsTableViewController] commitForRowAt: Deleted variation \(removed.name) at index \(indexPath.row)")
+
+        persist(keyword: updatedKeyword)
     }
 }

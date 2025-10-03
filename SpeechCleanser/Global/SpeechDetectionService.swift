@@ -11,6 +11,12 @@ import UIKit
 final class SpeechDetectionService {
     static let shared = SpeechDetectionService()
     
+    private struct NormalizedVariationEntry {
+        let variation: Variation
+        let normalized: String
+        let tokens: [String]
+    }
+    
     private let processingQueue = DispatchQueue(label: "SpeechDetectionService.processing", qos: .userInitiated)
     private let audioEngine = AVAudioEngine()
     private let cooldownInterval: TimeInterval = 6.0
@@ -20,7 +26,7 @@ final class SpeechDetectionService {
     
     private var whisperProcessor: WhisperRealtimeProcessor?
     private var keywordCache: [Keyword] = []
-    private var normalizedVariationCache: [UUID: [(variation: Variation, normalized: String)]] = [:]
+    private var normalizedVariationCache: [UUID: [NormalizedVariationEntry]] = [:]
     private var detectionCooldowns: [UUID: Date] = [:]
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var sessionConfigured = false
@@ -58,10 +64,10 @@ final class SpeechDetectionService {
             return
         }
         
-        let configuration = WhisperRealtimeProcessor.Configuration(windowDuration: windowDuration, hopDuration: hopDuration, enableVAD: true)
+        let configuration = WhisperConfiguration(windowDuration: windowDuration, hopDuration: hopDuration, enableVAD: true)
         whisperProcessor = WhisperRealtimeProcessor(modelURL: url, configuration: configuration)
         if whisperProcessor?.isOperational == true {
-            print("[SpeechDetectionService] configureModel: Whisper model loaded from \(url.lastPathComponent)")
+            print("[SpeechDetectionService] configureModel: Whisper model loaded from \(url.lastPathComponent) forcing language=bg")
         } else {
             print("[SpeechDetectionService][ERROR] configureModel: Failed to initialize whisper processor with model at \(url)")
         }
@@ -165,14 +171,17 @@ final class SpeechDetectionService {
         
         for keyword in keywords {
             var seen: Set<String> = []
-            let entries = keyword.variations.compactMap { variation -> (Variation, String)? in
+            let entries = keyword.variations.compactMap { variation -> NormalizedVariationEntry? in
                 let normalized = variation.name.normalizedForKeywordMatching()
                 guard !normalized.isEmpty else { return nil }
+                let tokens = normalized.split(separator: " ").map(String.init)
+                guard !tokens.isEmpty else { return nil }
                 guard seen.insert(normalized).inserted else {
                     print("[SpeechDetectionService] reloadKeywordCache: Skipping duplicate normalized variation for keyword \(keyword.name)")
                     return nil
                 }
-                return (variation, normalized)
+                
+                return NormalizedVariationEntry(variation: variation, normalized: normalized, tokens: tokens)
             }
             normalizedVariationCache[keyword.id] = entries
         }
@@ -186,7 +195,10 @@ final class SpeechDetectionService {
     private func evaluateTranscription(_ transcript: String) {
         print("[SpeechDetectionService] evaluateTranscription: Transcript='\(transcript)'")
         let normalizedTranscript = transcript.normalizedForKeywordMatching()
+        print("[SpeechDetectionService] evaluateTranscription: Normalized='\(normalizedTranscript)' length=\(normalizedTranscript.count)")
         guard !normalizedTranscript.isEmpty else { return }
+        let transcriptTokens = normalizedTranscript.split(separator: " ").map(String.init)
+        guard !transcriptTokens.isEmpty else { return }
         
         let now = Date()
         for keyword in keywordCache {
@@ -200,7 +212,7 @@ final class SpeechDetectionService {
             }
             
             for entry in normalizedEntries {
-                if normalizedTranscript.contains(entry.normalized) {
+                if transcriptTokens.containsSequence(entry.tokens) {
                     if let last = detectionCooldowns[keyword.id], now.timeIntervalSince(last) < cooldownInterval {
                         print("[SpeechDetectionService] evaluateTranscription: Cooldown active for keyword \(keyword.name)")
                         continue

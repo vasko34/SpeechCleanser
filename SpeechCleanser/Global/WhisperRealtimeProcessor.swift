@@ -8,22 +8,16 @@
 import Foundation
 
 class WhisperRealtimeProcessor {
-    struct Configuration {
-        let windowDuration: TimeInterval
-        let hopDuration: TimeInterval
-        let enableVAD: Bool
-    }
-    
     private let inferenceQueue = DispatchQueue(label: "WhisperRealtimeProcessor.inference", qos: .userInitiated)
     private let context: OpaquePointer
     private let state: OpaquePointer
     private let baseSampleRate: Int32 = 16_000
     private let maxTokens: Int32 = 64
-    private let configuration: Configuration
+    private let configuration: WhisperConfiguration
     private let modelURL: URL
     private(set) var isOperational: Bool = false
     
-    init?(modelURL: URL, configuration: Configuration) {
+    init?(modelURL: URL, configuration: WhisperConfiguration) {
         self.configuration = configuration
         self.modelURL = modelURL
         
@@ -67,6 +61,22 @@ class WhisperRealtimeProcessor {
         print("[WhisperRealtimeProcessor] deinit: Released whisper context for model \(modelURL.lastPathComponent)")
     }
     
+    private func calculateAmplitudeStats(for samples: [Float]) -> (rms: Float, peak: Float) {
+        var rmsAccumulator: Float = 0
+        var peak: Float = 0
+        
+        for sample in samples {
+            let absolute = abs(sample)
+            peak = max(peak, absolute)
+            rmsAccumulator += absolute * absolute
+        }
+        
+        let count = Float(max(samples.count, 1))
+        let rms = sqrt(rmsAccumulator / count)
+        
+        return (rms, peak)
+    }
+    
     func transcribe(samples: [Float], completionQueue: DispatchQueue, completion: @escaping (String) -> Void) {
         guard isOperational else {
             completionQueue.async {
@@ -87,9 +97,6 @@ class WhisperRealtimeProcessor {
         inferenceQueue.async { [weak self] in
             guard let self = self else { return }
             
-            let lang = strdup("bg")
-            defer { free(lang) }
-            
             var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
             params.print_realtime = false
             params.print_progress = false
@@ -98,7 +105,6 @@ class WhisperRealtimeProcessor {
             params.no_context = true
             params.no_timestamps = true
             params.detect_language = false
-            params.language = UnsafePointer<CChar>(lang)
             params.n_max_text_ctx = 0
             params.temperature = 0.2
             params.temperature_inc = 0.2
@@ -130,7 +136,6 @@ class WhisperRealtimeProcessor {
                 print("[WhisperRealtimeProcessor] transcribe: VAD disabled for current request")
             }
             
-            let start = CFAbsoluteTimeGetCurrent()
             let requestedSamples = samples.count
             if requestedSamples == 0 {
                 completionQueue.async {
@@ -148,11 +153,31 @@ class WhisperRealtimeProcessor {
                 return
             }
                       
+            let amplitude = self.calculateAmplitudeStats(for: samples)
+            print("[WhisperRealtimeProcessor] transcribe: BufferStats samples=\(requestedSamples) rms=\(String(format: "%.5f", Double(amplitude.rms))) peak=\(String(format: "%.5f", Double(amplitude.peak)))")
+            
+            if amplitude.peak < 0.00018 && amplitude.rms < 0.00009 {
+                print("[WhisperRealtimeProcessor] transcribe: Skipping inference due to low energy window")
+                completionQueue.async {
+                    completion("")
+                }
+                return
+            }
+            
+            let inferenceStart = CFAbsoluteTimeGetCurrent()
             let resultCode: Int32 = samples.withUnsafeBufferPointer { bufferPointer in
-                guard let baseAddress = bufferPointer.baseAddress else { return Int32(-99) }
+                guard let baseAddress = bufferPointer.baseAddress else {
+                    print("[WhisperRealtimeProcessor][ERROR] transcribe: Buffer pointer missing during inference")
+                    return Int32(-99)
+                }
                 
-                whisper_reset_timings(self.context)
-                return whisper_full_with_state(self.context, self.state, params, baseAddress, Int32(bufferPointer.count))
+                return "bg".withCString { pointer in
+                    var localParams = params
+                    localParams.language = pointer
+                    whisper_reset_state(self.state)
+                    whisper_reset_timings(self.context)
+                    return whisper_full_with_state(self.context, self.state, localParams, baseAddress, Int32(bufferPointer.count))
+                }
             }
             
             if resultCode != 0 {
@@ -182,7 +207,7 @@ class WhisperRealtimeProcessor {
                 }
             }
             
-            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            let elapsed = CFAbsoluteTimeGetCurrent() - inferenceStart
             let durationString = String(format: "%.2f", elapsed)
             let normalized = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             if normalized.isEmpty {

@@ -34,6 +34,9 @@ final class KeywordStore {
             return decoded
         } catch {
             print("[KeywordStore][ERROR] load: KeywordStore load failed with error: \(error.localizedDescription)")
+            userDefaults.removeObject(forKey: defaultsKey)
+            print("[KeywordStore] load: Cleared persisted keyword data due to decode failure")
+            
             return []
         }
     }

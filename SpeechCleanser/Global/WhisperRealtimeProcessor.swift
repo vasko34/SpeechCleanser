@@ -87,6 +87,9 @@ class WhisperRealtimeProcessor {
         inferenceQueue.async { [weak self] in
             guard let self = self else { return }
             
+            let lang = strdup("bg")
+            defer { free(lang) }
+            
             var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
             params.print_realtime = false
             params.print_progress = false
@@ -94,18 +97,18 @@ class WhisperRealtimeProcessor {
             params.single_segment = true
             params.no_context = true
             params.no_timestamps = true
+            params.detect_language = false
+            params.language = UnsafePointer<CChar>(lang)
             params.n_max_text_ctx = 0
             params.temperature = 0.2
             params.temperature_inc = 0.2
             params.n_threads = Int32(max(1, ProcessInfo.processInfo.processorCount - 1))
             params.max_tokens = self.maxTokens
             params.audio_ctx = Int32(self.configuration.windowDuration * Double(self.baseSampleRate))
-            params.detect_language = true
             params.duration_ms = Int32(self.configuration.windowDuration * 1000.0)
             params.offset_ms = 0
             params.prompt_tokens = nil
             params.prompt_n_tokens = 0
-            params.language = nil
             params.entropy_thold = 2.4
             params.logprob_thold = -1.0
             params.no_speech_thold = 0.35

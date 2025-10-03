@@ -9,9 +9,8 @@ import Foundation
 
 extension String {
     func normalizedForKeywordMatching() -> String {
-        let localeIdentifier = Locale.preferredLanguages.first ?? "en_US"
-        let locale = Locale(identifier: localeIdentifier)
-        let folded = folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale).lowercased()
+        let locale = Locale(identifier: "bg_BG")
+        let folded = folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale).lowercased(with: locale)
         let allowed = CharacterSet.letters.union(.decimalDigits).union(CharacterSet(charactersIn: " "))
         var filtered = ""
         filtered.reserveCapacity(folded.count)

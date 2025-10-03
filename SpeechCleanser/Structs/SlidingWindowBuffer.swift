@@ -23,6 +23,7 @@ struct SlidingWindowBuffer {
     
     mutating func append(_ samples: [Float]) -> [[Float]] {
         guard !samples.isEmpty else { return [] }
+        
         buffer.append(contentsOf: samples)
         var windows: [[Float]] = []
         

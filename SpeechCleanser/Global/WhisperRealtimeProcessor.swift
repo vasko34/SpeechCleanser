@@ -5,10 +5,7 @@
 //  Created by Vasil Botsev on 3.10.25.
 //
 
-import Foundation
-#if canImport(whispercpp)
 import whispercpp
-#endif
 
 class WhisperRealtimeProcessor {
     struct Configuration {
@@ -17,20 +14,18 @@ class WhisperRealtimeProcessor {
         let enableVAD: Bool
     }
     
+    private let inferenceQueue = DispatchQueue(label: "WhisperRealtimeProcessor.inference", qos: .userInitiated)
+    private let context: OpaquePointer
+    private let baseSampleRate: Int32 = 16_000
+    private let maxTokens: Int32 = 64
     private let configuration: Configuration
     private let modelURL: URL
     private(set) var isOperational: Bool = false
-    
-    #if canImport(whispercpp)
-    private let context: OpaquePointer
-    private let inferenceQueue = DispatchQueue(label: "WhisperRealtimeProcessor.inference", qos: .userInitiated)
-    #endif
     
     init?(modelURL: URL, configuration: Configuration) {
         self.configuration = configuration
         self.modelURL = modelURL
         
-        #if canImport(whispercpp)
         let path = modelURL.path
         guard FileManager.default.fileExists(atPath: path) else {
             print("[WhisperRealtimeProcessor][ERROR] init: Model file missing at path \(path)")
@@ -45,17 +40,11 @@ class WhisperRealtimeProcessor {
         context = loadedContext
         isOperational = true
         print("[WhisperRealtimeProcessor] init: whisper.cpp ready with model \(modelURL.lastPathComponent)")
-        #else
-        print("[WhisperRealtimeProcessor][ERROR] init: whisper.cpp module unavailable for model \(modelURL.lastPathComponent)")
-        return nil
-        #endif
     }
     
     deinit {
-        #if canImport(whispercpp)
         whisper_free(context)
         print("[WhisperRealtimeProcessor] deinit: Released whisper context for model \(modelURL.lastPathComponent)")
-        #endif
     }
     
     func transcribe(samples: [Float], completionQueue: DispatchQueue, completion: @escaping (String) -> Void) {
@@ -75,7 +64,6 @@ class WhisperRealtimeProcessor {
             return
         }
         
-        #if canImport(whispercpp)
         inferenceQueue.async { [weak self] in
             guard let self = self else { return }
             
@@ -88,8 +76,9 @@ class WhisperRealtimeProcessor {
             params.no_timestamps = true
             params.temperature = 0.2
             params.temperature_inc = 0.2
-            params.max_tokens = 64
-            params.audio_ctx = Int32(self.configuration.windowDuration * 16000.0)
+            params.n_threads = Int32(max(1, ProcessInfo.processInfo.processorCount - 1))
+            params.max_tokens = self.maxTokens
+            params.audio_ctx = Int32(self.configuration.windowDuration * Double(self.baseSampleRate))
             params.speed_up = false
             params.detect_language = true
             
@@ -104,6 +93,14 @@ class WhisperRealtimeProcessor {
             }
             
             let start = CFAbsoluteTimeGetCurrent()
+            let requestedSamples = samples.count
+            if requestedSamples == 0 {
+                completionQueue.async {
+                    completion("")
+                }
+                print("[WhisperRealtimeProcessor][ERROR] transcribe: Sample buffer unexpectedly empty prior to inference")
+                return
+            }
             let resultCode: Int32 = samples.withUnsafeBufferPointer { bufferPointer in
                 guard let baseAddress = bufferPointer.baseAddress else { return Int32(-99) }
                 whisper_reset_timings(self.context)
@@ -143,16 +140,11 @@ class WhisperRealtimeProcessor {
             if normalized.isEmpty {
                 print("[WhisperRealtimeProcessor] transcribe: Normalized transcript empty after trimming")
             }
-            print("[WhisperRealtimeProcessor] transcribe: Segments=\(segmentCount) duration=\(durationString)s result=\(normalized)")
+            print("[WhisperRealtimeProcessor] transcribe: Samples=\(requestedSamples) segments=\(segmentCount) duration=\(durationString)s result=\(normalized)")
             
             completionQueue.async {
                 completion(normalized)
             }
         }
-        #else
-        completionQueue.async {
-            completion("")
-        }
-        #endif
     }
 }

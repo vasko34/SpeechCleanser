@@ -15,13 +15,15 @@ final class SpeechDetectionService {
     private let audioEngine = AVAudioEngine()
     private let cooldownInterval: TimeInterval = 6.0
     private let downsampler = AudioDownsampler(targetSampleRate: 16_000)
+    private let windowDuration: TimeInterval = 0.8
+    private let hopDuration: TimeInterval = 0.2
     
-    private var slidingBuffer = SlidingWindowBuffer(windowDuration: 0.8, hopDuration: 0.2, sampleRate: 16_000)
     private var whisperProcessor: WhisperRealtimeProcessor?
     private var keywordCache: [Keyword] = []
     private var detectionCooldowns: [UUID: Date] = [:]
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var sessionConfigured = false
+    private lazy var slidingBuffer = SlidingWindowBuffer(windowDuration: windowDuration, hopDuration: hopDuration, sampleRate: 16_000)
     
     var isListening: Bool { audioEngine.isRunning }
     
@@ -41,7 +43,7 @@ final class SpeechDetectionService {
     
     private func configureModel() {
         if let url = Bundle.main.url(forResource: "ggml-small-q5_0", withExtension: "bin") {
-            let configuration = WhisperRealtimeProcessor.Configuration(windowDuration: 0.8, hopDuration: 0.2, enableVAD: true)
+            let configuration = WhisperRealtimeProcessor.Configuration(windowDuration: windowDuration, hopDuration: hopDuration, enableVAD: true)
             whisperProcessor = WhisperRealtimeProcessor(modelURL: url, configuration: configuration)
             if whisperProcessor?.isOperational == true {
                 print("[SpeechDetectionService] configureModel: Whisper model loaded from \(url.lastPathComponent)")
@@ -57,6 +59,8 @@ final class SpeechDetectionService {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers, .defaultToSpeaker])
+            try session.setPreferredSampleRate(16_000)
+            try session.setPreferredIOBufferDuration(hopDuration)
             try session.setActive(true, options: [.notifyOthersOnDeactivation])
             sessionConfigured = true
             print("[SpeechDetectionService] configureSession: Session activated with measurement mode")
@@ -114,7 +118,10 @@ final class SpeechDetectionService {
     
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         let samples = downsampler.convert(buffer: buffer)
-        guard !samples.isEmpty else { return }
+        guard !samples.isEmpty else {
+            print("[SpeechDetectionService] handleAudioBuffer: Downsampler returned empty sample array")
+            return
+        }
         
         let windows = slidingBuffer.append(samples)
         if !windows.isEmpty {
@@ -228,6 +235,7 @@ final class SpeechDetectionService {
     }
     
     func startListening(completion: ((Bool) -> Void)? = nil) {
+        print("[SpeechDetectionService] startListening: Requested start, current state=\(audioEngine.isRunning)")
         if audioEngine.isRunning {
             DispatchQueue.main.async {
                 completion?(true)
@@ -244,6 +252,8 @@ final class SpeechDetectionService {
         }
         
         let session = AVAudioSession.sharedInstance()
+        print("[SpeechDetectionService] startListening: Requesting microphone permission")
+        
         session.requestRecordPermission { [weak self] granted in
             guard let self = self else { return }
             if !granted {
@@ -254,6 +264,7 @@ final class SpeechDetectionService {
                 return
             }
             
+            print("[SpeechDetectionService] startListening: Microphone permission granted")
             self.processingQueue.async {
                 self.reloadKeywordCache()
                 let sessionConfigured = self.configureSession()
@@ -262,6 +273,10 @@ final class SpeechDetectionService {
                         completion?(false)
                     }
                     return
+                }
+                
+                if self.keywordCache.isEmpty {
+                    print("[SpeechDetectionService] startListening: No enabled keywords available at start")
                 }
                 
                 let prepared = self.prepareEngine()
@@ -276,8 +291,12 @@ final class SpeechDetectionService {
     }
     
     func stopListening() {
+        print("[SpeechDetectionService] stopListening: Requested stop")
         processingQueue.async {
-            guard self.audioEngine.isRunning else { return }
+            guard self.audioEngine.isRunning else {
+                print("[SpeechDetectionService] stopListening: Audio engine already stopped")
+                return
+            }
             
             self.audioEngine.inputNode.removeTap(onBus: 0)
             self.audioEngine.stop()

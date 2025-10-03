@@ -8,7 +8,6 @@
 import UIKit
 
 class KeywordsTableViewController: UITableViewController {
-    private let persistenceQueue = DispatchQueue(label: "KeywordsTableViewController.persistence", qos: .userInitiated)
     private var keywords: [Keyword] = []
     
     override func viewDidLoad() {
@@ -30,13 +29,6 @@ class KeywordsTableViewController: UITableViewController {
         print("[KeywordsTableViewController] viewWillAppear: Reloaded with \(keywords.count) keywords")
     }
     
-    private func persistKeywords(_ keywords: [Keyword]) {
-        let keywordsCopy = keywords
-        persistenceQueue.async {
-            KeywordStore.shared.save(keywordsCopy)
-        }
-    }
-    
     @objc private func addWord() {
         let alert = UIAlertController(title: "New Keyword", message: "Enter the keyword name.", preferredStyle: .alert)
         alert.addTextField { textField in
@@ -54,7 +46,7 @@ class KeywordsTableViewController: UITableViewController {
             let keyword = Keyword(name: value, isEnabled: true, variations: [])
             self.keywords.insert(keyword, at: 0)
             self.tableView.insertRows(at: [IndexPath(row: 0, section: 0)], with: .automatic)
-            self.persistKeywords(self.keywords)
+            KeywordStore.shared.save(self.keywords)
             print("[KeywordsTableViewController] addWord: Added keyword \(value)")
         }
         
@@ -80,10 +72,7 @@ class KeywordsTableViewController: UITableViewController {
             guard let index = self.keywords.firstIndex(where: { $0.id == keyword.id }) else { return }
             
             self.keywords[index].isEnabled = isOn
-            let updated = self.keywords
-            self.persistenceQueue.async {
-                KeywordStore.shared.save(updated)
-            }
+            KeywordStore.shared.save(self.keywords)
             print("[KeywordsTableViewController] cellForRowAt: Toggled keyword \(keyword.name) to \(isOn)")
         }
         
@@ -102,10 +91,7 @@ class KeywordsTableViewController: UITableViewController {
         
         let keyword = keywords.remove(at: indexPath.row)
         tableView.deleteRows(at: [indexPath], with: .automatic)
+        KeywordStore.shared.deleteKeyword(withID: keyword.id)
         print("[KeywordsTableViewController] commitForRowAt: Deleted keyword \(keyword.name)")
-        
-        persistenceQueue.async {
-            KeywordStore.shared.deleteKeyword(withID: keyword.id)
-        }
     }
 }

@@ -8,7 +8,6 @@
 import UIKit
 
 class VariationsTableViewController: UITableViewController {
-    private let persistenceQueue = DispatchQueue(label: "VariationsTableViewController.persistence", qos: .userInitiated)
     private let keywordID: UUID
     private var keyword: Keyword?
     
@@ -66,13 +65,6 @@ class VariationsTableViewController: UITableViewController {
         print("[VariationsTableViewController] presentVariationEditor: Presented editor titled \(title)")
     }
     
-    private func persist(keyword: Keyword) {
-        let keywordCopy = keyword
-        persistenceQueue.async {
-            KeywordStore.shared.update(keywordCopy)
-        }
-    }
-    
     @objc private func addVariation() {
         presentVariationEditor(title: "Add Variation", message: "Enter a spoken variation for this keyword.", defaultValue: nil) { [weak self] value in
             guard let self = self else { return }
@@ -83,7 +75,7 @@ class VariationsTableViewController: UITableViewController {
             self.keyword = keyword
             
             self.tableView.insertRows(at: [IndexPath(row: 0, section: 0)], with: .automatic)
-            self.persist(keyword: keyword)
+            KeywordStore.shared.update(keyword)
             print("[VariationsTableViewController] addVariation: Added variation \(value)")
         }
     }
@@ -112,7 +104,7 @@ class VariationsTableViewController: UITableViewController {
             keyword.variations[indexPath.row].name = value
             self.keyword = keyword
             self.tableView.reloadRows(at: [indexPath], with: .automatic)
-            self.persist(keyword: keyword)
+            KeywordStore.shared.update(keyword)
             print("[VariationsTableViewController] didSelectRowAt: Updated variation at index \(indexPath.row)")
         }
         
@@ -129,6 +121,6 @@ class VariationsTableViewController: UITableViewController {
         tableView.deleteRows(at: [indexPath], with: .automatic)
         print("[VariationsTableViewController] commitForRowAt: Deleted variation \(removed.name) at index \(indexPath.row)")
 
-        persist(keyword: updatedKeyword)
+        KeywordStore.shared.update(updatedKeyword)
     }
 }

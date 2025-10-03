@@ -12,7 +12,6 @@ final class SpeechDetectionService {
     static let shared = SpeechDetectionService()
     
     private let processingQueue = DispatchQueue(label: "SpeechDetectionService.processing", qos: .userInitiated)
-    private let transcriptionQueue = DispatchQueue(label: "SpeechDetectionService.transcription", qos: .userInitiated)
     private let audioEngine = AVAudioEngine()
     private let cooldownInterval: TimeInterval = 6.0
     private let downsampler = AudioDownsampler(targetSampleRate: 16_000)
@@ -84,14 +83,16 @@ final class SpeechDetectionService {
     private func prepareEngine() -> Bool {
         let inputNode = audioEngine.inputNode
         inputNode.removeTap(onBus: 0)
-        
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false) else {
-            print("[SpeechDetectionService][ERROR] prepareEngine: Failed to create audio format")
+        let hardwareFormat = inputNode.outputFormat(forBus: 0)
+        guard let tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: hardwareFormat.sampleRate, channels: hardwareFormat.channelCount, interleaved: false) else {
+            print("[SpeechDetectionService][ERROR] prepareEngine: Unable to create tap format for sampleRate=\(hardwareFormat.sampleRate)")
             return false
         }
         
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        print("[SpeechDetectionService] prepareEngine: Installing tap sampleRate=\(tapFormat.sampleRate) channels=\(tapFormat.channelCount)")
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { [weak self] buffer, _ in
             guard let self = self else { return }
+            
             self.processingQueue.async {
                 self.handleAudioBuffer(buffer)
             }
@@ -116,17 +117,21 @@ final class SpeechDetectionService {
         guard !samples.isEmpty else { return }
         
         let windows = slidingBuffer.append(samples)
+        if !windows.isEmpty {
+            print("[SpeechDetectionService] handleAudioBuffer: Generated \(windows.count) windows from \(samples.count) samples")
+        }
         guard let processor = whisperProcessor else { return }
+        guard !keywordCache.isEmpty else {
+            print("[SpeechDetectionService] handleAudioBuffer: Skipping transcription because keyword cache is empty")
+            return
+        }
         
         for window in windows {
-            transcriptionQueue.async { [weak self] in
+            processor.transcribe(samples: window, completionQueue: processingQueue) { [weak self] transcript in
                 guard let self = self else { return }
-                processor.transcribe(samples: window) { transcript in
-                    guard !transcript.isEmpty else { return }
-                    self.processingQueue.async {
-                        self.evaluateTranscription(transcript)
-                    }
-                }
+                guard !transcript.isEmpty else { return }
+                
+                self.evaluateTranscription(transcript)
             }
         }
     }
@@ -135,10 +140,12 @@ final class SpeechDetectionService {
         let keywords = KeywordStore.shared.load().filter { $0.isEnabled && !$0.variations.isEmpty }
         keywordCache = keywords
         detectionCooldowns = detectionCooldowns.filter { Date().timeIntervalSince($0.value) < cooldownInterval }
-        print("[SpeechDetectionService] reloadKeywordCache: Cached \(keywords.count) enabled keywords")
+        let variations = keywords.reduce(0) { $0 + $1.variations.count }
+        print("[SpeechDetectionService] reloadKeywordCache: Cached \(keywords.count) enabled keywords with \(variations) variations")
     }
     
     private func evaluateTranscription(_ transcript: String) {
+        print("[SpeechDetectionService] evaluateTranscription: Transcript='\(transcript)'")
         let normalizedTranscript = transcript.normalizedForKeywordMatching()
         guard !normalizedTranscript.isEmpty else { return }
         

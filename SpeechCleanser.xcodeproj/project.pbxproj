@@ -6,8 +6,15 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		364C91912E89D2F900BBA946 /* Whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 364C918D2E89D2F900BBA946 /* Whisper.xcframework */; };
+		364C91922E89D2F900BBA946 /* WhisperResources in Resources */ = {isa = PBXBuildFile; fileRef = 364C918E2E89D2F900BBA946 /* WhisperResources */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		364C91652E89CA6700BBA946 /* SpeechCleanser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpeechCleanser.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		364C918D2E89D2F900BBA946 /* Whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Whisper.xcframework; sourceTree = "<group>"; };
+		364C918E2E89D2F900BBA946 /* WhisperResources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = WhisperResources; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -36,6 +43,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				364C91912E89D2F900BBA946 /* Whisper.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -47,6 +55,7 @@
 			children = (
 				364C91672E89CA6700BBA946 /* SpeechCleanser */,
 				364C91662E89CA6700BBA946 /* Products */,
+				364C918F2E89D2F900BBA946 /* Whisper */,
 			);
 			sourceTree = "<group>";
 		};
@@ -56,6 +65,15 @@
 				364C91652E89CA6700BBA946 /* SpeechCleanser.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		364C918F2E89D2F900BBA946 /* Whisper */ = {
+			isa = PBXGroup;
+			children = (
+				364C918D2E89D2F900BBA946 /* Whisper.xcframework */,
+				364C918E2E89D2F900BBA946 /* WhisperResources */,
+			);
+			path = Whisper;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -122,6 +140,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				364C91922E89D2F900BBA946 /* WhisperResources in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -146,7 +165,16 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 3KLAPSG7T4;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Whisper",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Whisper/Headers",
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64/Headers",
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64-simulator/Headers",
+				);
 				INFOPLIST_FILE = SpeechCleanser/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = SpeechCleanser;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -159,10 +187,19 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64",
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64-simulator",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.SpeechCleanser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "SpeechCleanser/SpeechCleanser-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -176,7 +213,16 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 3KLAPSG7T4;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Whisper",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Whisper/Headers",
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64/Headers",
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64-simulator/Headers",
+				);
 				INFOPLIST_FILE = SpeechCleanser/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = SpeechCleanser;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -189,10 +235,19 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64",
+					"$(PROJECT_DIR)/Whisper/Whisper.xcframework/ios-arm64-simulator",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.SpeechCleanser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "SpeechCleanser/SpeechCleanser-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

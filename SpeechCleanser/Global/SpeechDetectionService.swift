@@ -42,16 +42,40 @@ final class SpeechDetectionService {
     }
     
     private func configureModel() {
-        if let url = Bundle.main.url(forResource: "ggml-small-q5_0", withExtension: "bin") {
-            let configuration = WhisperRealtimeProcessor.Configuration(windowDuration: windowDuration, hopDuration: hopDuration, enableVAD: true)
-            whisperProcessor = WhisperRealtimeProcessor(modelURL: url, configuration: configuration)
-            if whisperProcessor?.isOperational == true {
-                print("[SpeechDetectionService] configureModel: Whisper model loaded from \(url.lastPathComponent)")
+        let bundle = Bundle.main
+        let preferredModelName = "ggml-small-q5_0"
+        let fallbackModelName = "ggml-small-q5_1"
+        
+        var locatedURL: URL?
+        var usedFallback = false
+        
+        if let direct = bundle.url(forResource: preferredModelName, withExtension: "bin") {
+            locatedURL = direct
+        } else if let subpath = bundle.url(forResource: preferredModelName, withExtension: "bin", subdirectory: "WhisperResources") {
+            locatedURL = subpath
+        } else if let fallback = bundle.url(forResource: fallbackModelName, withExtension: "bin") {
+            locatedURL = fallback
+            usedFallback = true
+        } else if let fallbackSubpath = bundle.url(forResource: fallbackModelName, withExtension: "bin", subdirectory: "WhisperResources") {
+            locatedURL = fallbackSubpath
+            usedFallback = true
+        }
+        
+        guard let url = locatedURL else {
+            print("[SpeechDetectionService][ERROR] configureModel: Model ggml-small-q5_0.bin not found in bundle or WhisperResources")
+            return
+        }
+        
+        let configuration = WhisperRealtimeProcessor.Configuration(windowDuration: windowDuration, hopDuration: hopDuration, enableVAD: true)
+        whisperProcessor = WhisperRealtimeProcessor(modelURL: url, configuration: configuration)
+        if whisperProcessor?.isOperational == true {
+            if usedFallback {
+                print("[SpeechDetectionService][ERROR] configureModel: Preferred model missing, using fallback model \(url.lastPathComponent)")
             } else {
-                print("[SpeechDetectionService][ERROR] configureModel: Failed to initialize whisper processor with model at \(url)")
+                print("[SpeechDetectionService] configureModel: Whisper model loaded from \(url.lastPathComponent)")
             }
         } else {
-            print("[SpeechDetectionService][ERROR] configureModel: Model ggml-small-q5_0.bin not found in bundle")
+            print("[SpeechDetectionService][ERROR] configureModel: Failed to initialize whisper processor with model at \(url)")
         }
     }
     

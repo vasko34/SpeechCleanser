@@ -5,7 +5,7 @@
 //  Created by Vasil Botsev on 3.10.25.
 //
 
-import whispercpp
+import Foundation
 
 class WhisperRealtimeProcessor {
     struct Configuration {
@@ -32,7 +32,11 @@ class WhisperRealtimeProcessor {
             return nil
         }
         
-        guard let loadedContext = whisper_init_from_file(path) else {
+        var contextParams = whisper_context_default_params()
+        contextParams.use_gpu = false
+        contextParams.dtw_aheads_preset = WHISPER_AHEADS_NONE
+        
+        guard let loadedContext = whisper_init_from_file_with_params(path, contextParams) else {
             print("[WhisperRealtimeProcessor][ERROR] init: whisper_init_from_file failed for \(modelURL.lastPathComponent)")
             return nil
         }
@@ -40,6 +44,11 @@ class WhisperRealtimeProcessor {
         context = loadedContext
         isOperational = true
         print("[WhisperRealtimeProcessor] init: whisper.cpp ready with model \(modelURL.lastPathComponent)")
+        
+        if let systemInfoPointer = whisper_print_system_info() {
+            let systemInfo = String(cString: systemInfoPointer)
+            print("[WhisperRealtimeProcessor] init: System info -> \(systemInfo)")
+        }
     }
     
     deinit {
@@ -81,6 +90,10 @@ class WhisperRealtimeProcessor {
             params.audio_ctx = Int32(self.configuration.windowDuration * Double(self.baseSampleRate))
             params.speed_up = false
             params.detect_language = true
+            params.duration_ms = Int32(self.configuration.windowDuration * 1000.0)
+            params.offset_ms = 0
+            params.prompt_tokens = nil
+            params.prompt_n_tokens = 0
             
             if self.configuration.enableVAD {
                 params.enable_vad = true

@@ -29,6 +29,7 @@ final class SpeechDetectionService {
     private let downsampler = AudioDownsampler(targetSampleRate: 16_000)
     private let windowDuration: TimeInterval = 0.6
     private let hopDuration: TimeInterval = 0.15
+    private let maxPendingWindows = 6
     
     private var whisperProcessor: WhisperRealtimeProcessor?
     private var keywordCache: [Keyword] = []
@@ -37,7 +38,7 @@ final class SpeechDetectionService {
     private var sessionConfigured = false
     private var timestampEstimator: AudioTimestampEstimator?
     private var sessionStartDate: Date?
-    private var pendingWindow: PendingWindow?
+    private var pendingWindows: [PendingWindow] = []
     private lazy var slidingBuffer = SlidingWindowBuffer(windowDuration: windowDuration, hopDuration: hopDuration, sampleRate: Int(targetSampleRate))
     
     var isListening: Bool { audioEngine.isRunning }
@@ -195,26 +196,33 @@ final class SpeechDetectionService {
         }
         
         let offset = sessionStartDate.map { startDate.timeIntervalSince($0) } ?? 0
-        print(String(format: "[SpeechDetectionService] enqueueWindow: Processor busy, deferring window offset=%.2fs", offset))
-        pendingWindow = PendingWindow(samples: samples, startDate: startDate)
+        if pendingWindows.count >= maxPendingWindows {
+            let dropped = pendingWindows.removeFirst()
+            let droppedOffset = sessionStartDate.map { dropped.startDate.timeIntervalSince($0) } ?? 0
+            print(String(format: "[SpeechDetectionService][ERROR] enqueueWindow: Queue full dropping window offset=%.2fs", droppedOffset))
+        }
+        
+        pendingWindows.append(PendingWindow(samples: samples, startDate: startDate))
+        print(String(format: "[SpeechDetectionService] enqueueWindow: Processor busy, queued window offset=%.2fs queueLength=%d", offset, pendingWindows.count))
     }
     
     private func processPendingWindowIfNeeded() {
-        guard let deferred = pendingWindow else { return }
+        guard !pendingWindows.isEmpty else { return }
         guard let processor = whisperProcessor, processor.isOperational else {
             print("[SpeechDetectionService][ERROR] processPendingWindowIfNeeded: Whisper processor unavailable during retry")
-            pendingWindow = nil
+            pendingWindows.removeAll()
             return
         }
         
-        pendingWindow = nil
-        if submitTranscription(with: processor, samples: deferred.samples, startDate: deferred.startDate) {
-            return
-        }
-        
+        let deferred = pendingWindows.removeFirst()
         let offset = sessionStartDate.map { deferred.startDate.timeIntervalSince($0) } ?? 0
+        if submitTranscription(with: processor, samples: deferred.samples, startDate: deferred.startDate) {
+            print(String(format: "[SpeechDetectionService] processPendingWindowIfNeeded: Submitted deferred window offset=%.2fs remainingQueue=%d", offset, pendingWindows.count))
+            return
+        }
+        
+        pendingWindows.insert(deferred, at: 0)
         print(String(format: "[SpeechDetectionService][ERROR] processPendingWindowIfNeeded: Processor still busy for deferred window offset=%.2fs", offset))
-        pendingWindow = deferred
     }
     
     private func reloadKeywordCache() {
@@ -253,11 +261,27 @@ final class SpeechDetectionService {
         
         let transcript = result.transcript
         print(String(format: "[SpeechDetectionService] evaluateTranscription: Transcript='%@' startOffset=%.2fs endOffset=%.2fs", transcript, result.startOffset, result.endOffset))
+        
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTranscript.hasPrefix("[") && trimmedTranscript.hasSuffix("]") {
+            print("[SpeechDetectionService] evaluateTranscription: Ignoring bracketed transcript '\(trimmedTranscript)'")
+            return
+        }
+        
         let normalizedTranscript = transcript.normalizedForKeywordMatching()
         print("[SpeechDetectionService] evaluateTranscription: Normalized='\(normalizedTranscript)' length=\(normalizedTranscript.count)")
         guard !normalizedTranscript.isEmpty else { return }
         let transcriptTokens = normalizedTranscript.split(separator: " ").map(String.init)
         guard !transcriptTokens.isEmpty else { return }
+        
+        let previewJoined = transcriptTokens.joined(separator: "|")
+        let preview: String
+        if previewJoined.count > 200 {
+            preview = String(previewJoined.prefix(200)) + "…"
+        } else {
+            preview = previewJoined
+        }
+        print("[SpeechDetectionService] evaluateTranscription: TokensPreview=\(preview) count=\(transcriptTokens.count)")
         
         var tokenOffsets: [Int] = []
         tokenOffsets.reserveCapacity(transcriptTokens.count)
@@ -291,18 +315,24 @@ final class SpeechDetectionService {
                 }
                 
                 detectionCooldowns[keyword.id] = detectionDate
+                print(String(format: "[SpeechDetectionService] evaluateTranscription: Matched keyword '%@' variation='%@' at tokenIndex=%d", keyword.name, entry.variation.name, matchIndex))
                 handleDetection(keyword: keyword, variation: entry.variation, transcript: transcript, detectionDate: detectionDate)
                 
                 return
             }
         }
+        print("[SpeechDetectionService] evaluateTranscription: No keyword matched in current transcript")
     }
     
     private func detectionDate(forMatchAt tokenIndex: Int, entry: NormalizedVariationEntry, tokenOffsets: [Int], normalizedLength: Int, result: WhisperTranscriptionResult) -> Date {
-        let baseDate = result.windowStartDate.addingTimeInterval(result.startOffset)
-        let duration = result.segmentDuration
-        guard tokenIndex < tokenOffsets.count else { return baseDate }
-        guard normalizedLength > 0, duration > 0 else { return baseDate }
+        guard tokenIndex < tokenOffsets.count else { return result.windowStartDate }
+        let audioDuration = max(result.audioDuration, Double(result.sampleCount) / targetSampleRate)
+        guard audioDuration > 0 else { return result.windowStartDate }
+        
+        let trimmedStart = max(0, min(result.startOffset, audioDuration))
+        let trimmedEnd = max(trimmedStart, min(result.endOffset, audioDuration))
+        let effectiveDuration = max(trimmedEnd - trimmedStart, audioDuration)
+        guard normalizedLength > 0 else { return result.windowStartDate.addingTimeInterval(trimmedStart) }
         
         let startOffset = tokenOffsets[tokenIndex]
         var matchLength = entry.tokens.reduce(0) { $0 + $1.count }
@@ -314,7 +344,7 @@ final class SpeechDetectionService {
         let divisor = max(normalizedLength - 1, 1)
         let ratio = max(0, min(Double(midpoint) / Double(divisor), 1))
         
-        return baseDate.addingTimeInterval(ratio * duration)
+        return result.windowStartDate.addingTimeInterval(trimmedStart + ratio * effectiveDuration)
     }
     
     private func handleDetection(keyword: Keyword, variation: Variation, transcript: String, detectionDate: Date) {
@@ -395,7 +425,7 @@ final class SpeechDetectionService {
                 self.downsampler.reset()
                 self.timestampEstimator = nil
                 self.sessionStartDate = nil
-                self.pendingWindow = nil
+                self.pendingWindows.removeAll(keepingCapacity: false)
                 print("[SpeechDetectionService] startListening: Cleared buffers and cooldowns prior to session start")
                 
                 let sessionConfigured = self.configureSession()
@@ -434,7 +464,7 @@ final class SpeechDetectionService {
             self.audioEngine.reset()
             self.slidingBuffer.reset()
             self.detectionCooldowns.removeAll()
-            self.pendingWindow = nil
+            self.pendingWindows.removeAll(keepingCapacity: false)
             self.sessionStartDate = nil
             self.timestampEstimator = nil
             self.downsampler.reset()

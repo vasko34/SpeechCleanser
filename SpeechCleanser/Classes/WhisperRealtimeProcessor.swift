@@ -16,9 +16,15 @@ class WhisperRealtimeProcessor {
     private let maxTokens: Int32 = 48
     private let configuration: WhisperConfiguration
     private let modelURL: URL
+    private let normalizer = AudioEnergyNormalizer()
+    private let forcedLanguageID: Int32
     
     private var isBusyFlag: Bool = false
     private(set) var isOperational: Bool = false
+    
+    var isBusy: Bool {
+        stateQueue.sync { isBusyFlag }
+    }
     
     init?(modelURL: URL, configuration: WhisperConfiguration) {
         self.configuration = configuration
@@ -31,7 +37,7 @@ class WhisperRealtimeProcessor {
         }
         
         var contextParams = whisper_context_default_params()
-        contextParams.use_gpu = false
+        contextParams.use_gpu = true
         contextParams.dtw_aheads_preset = WHISPER_AHEADS_NONE
         
         guard let loadedContext = whisper_init_from_file_with_params(path, contextParams) else {
@@ -48,6 +54,10 @@ class WhisperRealtimeProcessor {
         
         state = allocatedState
         isOperational = true
+        
+        forcedLanguageID = "bg".withCString { pointer in
+            Int32(whisper_lang_id(pointer))
+        }
         
         let vadStatus = configuration.enableVAD ? "enabled" : "disabled"
         print("[WhisperRealtimeProcessor] init: whisper.cpp ready with model \(modelURL.lastPathComponent) VAD=\(vadStatus) window=\(configuration.windowDuration)s hop=\(configuration.hopDuration)s")
@@ -86,12 +96,12 @@ class WhisperRealtimeProcessor {
             print("[WhisperRealtimeProcessor][ERROR] transcribe: Processor not operational for model \(modelURL.lastPathComponent)")
             return false
         }
-        
         guard !samples.isEmpty else {
             print("[WhisperRealtimeProcessor] transcribe: Received empty sample buffer")
             return false
         }
         
+        let audioDuration = Double(samples.count) / Double(baseSampleRate)
         var accepted = false
         stateQueue.sync {
             if !isBusyFlag {
@@ -159,7 +169,7 @@ class WhisperRealtimeProcessor {
             let requestedSamples = samples.count
             if requestedSamples > Int(Int32.max) {
                 print("[WhisperRealtimeProcessor][ERROR] transcribe: Sample buffer exceeds Int32 capacity with \(requestedSamples) samples")
-                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0, audioDuration: audioDuration, sampleCount: samples.count)
                 
                 completionQueue.async {
                     completion(empty)
@@ -169,19 +179,29 @@ class WhisperRealtimeProcessor {
             }
                       
             let amplitude = self.calculateAmplitudeStats(for: samples)
+            var inferenceSamples = samples
+            var amplitudeForInference = amplitude
             print("[WhisperRealtimeProcessor] transcribe: BufferStats samples=\(requestedSamples) rms=\(String(format: "%.5f", Double(amplitude.rms))) peak=\(String(format: "%.5f", Double(amplitude.peak)))")
             
-            if amplitude.peak < 0.00018 && amplitude.rms < 0.00009 {
+            if amplitude.peak < 0.00005 && amplitude.rms < 0.00002 {
                 print("[WhisperRealtimeProcessor] transcribe: Skipping inference due to low energy window")
-                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0, audioDuration: audioDuration, sampleCount: samples.count)
                 completionQueue.async {
                     completion(empty)
                 }
                 return
             }
             
+            if let normalization = self.normalizer.normalize(samples: samples, amplitude: amplitude) {
+                inferenceSamples = normalization.samples
+                amplitudeForInference = (normalization.afterRMS, normalization.afterPeak)
+                print(String(format: "[WhisperRealtimeProcessor] transcribe: Applied gain %.2fx rms=%.5f->%.5f peak=%.5f->%.5f", Double(normalization.appliedGain), Double(normalization.beforeRMS), Double(normalization.afterRMS), Double(normalization.beforePeak), Double(normalization.afterPeak)))
+            }
+            
+            print("[WhisperRealtimeProcessor] transcribe: NormalizedBuffer rms=\(String(format: "%.5f", Double(amplitudeForInference.rms))) peak=\(String(format: "%.5f", Double(amplitudeForInference.peak)))")
+            
             let inferenceStart = CFAbsoluteTimeGetCurrent()
-            let resultCode: Int32 = samples.withUnsafeBufferPointer { bufferPointer in
+            let resultCode: Int32 = inferenceSamples.withUnsafeBufferPointer { bufferPointer in
                 guard let baseAddress = bufferPointer.baseAddress else {
                     print("[WhisperRealtimeProcessor][ERROR] transcribe: Buffer pointer missing during inference")
                     return Int32(-99)
@@ -197,7 +217,7 @@ class WhisperRealtimeProcessor {
             
             if resultCode != 0 {
                 print("[WhisperRealtimeProcessor][ERROR] transcribe: whisper_full failed with code \(resultCode) requestedSamples=\(requestedSamples)")
-                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0, audioDuration: audioDuration, sampleCount: samples.count)
                 completionQueue.async {
                     completion(empty)
                 }
@@ -207,7 +227,7 @@ class WhisperRealtimeProcessor {
             let segmentCount = whisper_full_n_segments_from_state(self.state)
             if segmentCount <= 0 {
                 print("[WhisperRealtimeProcessor] transcribe: No segments detected in current window")
-                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0, audioDuration: audioDuration, sampleCount: samples.count)
                 completionQueue.async {
                     completion(empty)
                 }
@@ -251,9 +271,20 @@ class WhisperRealtimeProcessor {
                 latestEnd = earliestStart
             }
             
-            print("[WhisperRealtimeProcessor] transcribe: Samples=\(requestedSamples) segments=\(segmentCount) duration=\(durationString)s windowOffsets=\(String(format: "%.2f", earliestStart))s-\(String(format: "%.2f", latestEnd))s result=\(normalized)")
-
-            let result = WhisperTranscriptionResult(transcript: normalized, windowStartDate: startDate, startOffset: earliestStart, endOffset: latestEnd)
+            let trimmedEarliest = max(0, min(earliestStart, audioDuration))
+            let trimmedLatest = max(trimmedEarliest, min(latestEnd, audioDuration))
+            let detectedLanguageID = whisper_full_lang_id_from_state(self.state)
+            if detectedLanguageID != self.forcedLanguageID {
+                let expected = whisper_lang_str_full(Int32(self.forcedLanguageID))
+                let detected = whisper_lang_str_full(Int32(detectedLanguageID))
+                let expectedString = expected.map { String(cString: $0) } ?? "unknown"
+                let detectedString = detected.map { String(cString: $0) } ?? "unknown"
+                print("[WhisperRealtimeProcessor][ERROR] transcribe: Language mismatch expected=\(expectedString) detected=\(detectedString)")
+            }
+            
+            print("[WhisperRealtimeProcessor] transcribe: Samples=\(requestedSamples) segments=\(segmentCount) duration=\(durationString)s windowOffsets=\(String(format: "%.2f", trimmedEarliest))s-\(String(format: "%.2f", trimmedLatest))s result=\(normalized)")
+            
+            let result = WhisperTranscriptionResult(transcript: normalized, windowStartDate: startDate, startOffset: trimmedEarliest, endOffset: trimmedLatest, audioDuration: audioDuration, sampleCount: samples.count)
             
             completionQueue.async {
                 completion(result)

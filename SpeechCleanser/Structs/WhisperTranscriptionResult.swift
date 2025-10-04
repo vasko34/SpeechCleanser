@@ -12,6 +12,8 @@ struct WhisperTranscriptionResult {
     let windowStartDate: Date
     let startOffset: TimeInterval
     let endOffset: TimeInterval
+    let audioDuration: TimeInterval
+    let sampleCount: Int
     
     var segmentDuration: TimeInterval {
         max(endOffset - startOffset, 0)

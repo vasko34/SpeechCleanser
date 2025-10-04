@@ -40,7 +40,6 @@ struct SlidingWindowBuffer {
             buffer.removeFirst(startIndex)
             processedSampleCount += startIndex
             startIndex = 0
-            processedSampleCount = 0
         }
         
         return windows
@@ -49,5 +48,6 @@ struct SlidingWindowBuffer {
     mutating func reset() {
         buffer.removeAll(keepingCapacity: true)
         startIndex = 0
+        processedSampleCount = 0
     }
 }

@@ -8,15 +8,15 @@
 import Foundation
 
 extension Array where Element == String {
-    func containsSequence(_ sequence: [String]) -> Bool {
-        guard !sequence.isEmpty, !isEmpty, sequence.count <= count else { return false }
+    func firstIndexOfSequence(_ sequence: [String]) -> Int? {
+        guard !sequence.isEmpty, !isEmpty, sequence.count <= count else { return nil }
         
         if sequence.count == 1 {
-            return contains(sequence[0])
+            return firstIndex(of: sequence[0])
         }
         
         let limit = count - sequence.count
-        if limit < 0 { return false }
+        if limit < 0 { return nil }
         
         for start in 0...limit {
             var isMatch = true
@@ -28,10 +28,14 @@ extension Array where Element == String {
             }
             
             if isMatch {
-                return true
+                return start
             }
         }
         
-        return false
+        return nil
+    }
+    
+    func containsSequence(_ sequence: [String]) -> Bool {
+        firstIndexOfSequence(sequence) != nil
     }
 }

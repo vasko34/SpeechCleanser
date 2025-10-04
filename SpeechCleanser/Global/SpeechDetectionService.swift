@@ -17,20 +17,28 @@ final class SpeechDetectionService {
         let tokens: [String]
     }
     
+    private struct PendingWindow {
+        let samples: [Float]
+        let startDate: Date
+    }
+    
     private let processingQueue = DispatchQueue(label: "SpeechDetectionService.processing", qos: .userInitiated)
     private let audioEngine = AVAudioEngine()
     private let cooldownInterval: TimeInterval = 6.0
+    private let targetSampleRate: Double = 16_000
     private let downsampler = AudioDownsampler(targetSampleRate: 16_000)
-    private let windowDuration: TimeInterval = 0.8
-    private let hopDuration: TimeInterval = 0.2
+    private let windowDuration: TimeInterval = 0.6
+    private let hopDuration: TimeInterval = 0.15
     
     private var whisperProcessor: WhisperRealtimeProcessor?
     private var keywordCache: [Keyword] = []
     private var normalizedVariationCache: [UUID: [NormalizedVariationEntry]] = [:]
     private var detectionCooldowns: [UUID: Date] = [:]
-    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var sessionConfigured = false
-    private lazy var slidingBuffer = SlidingWindowBuffer(windowDuration: windowDuration, hopDuration: hopDuration, sampleRate: 16_000)
+    private var timestampEstimator: AudioTimestampEstimator?
+    private var sessionStartDate: Date?
+    private var pendingWindow: PendingWindow?
+    private lazy var slidingBuffer = SlidingWindowBuffer(windowDuration: windowDuration, hopDuration: hopDuration, sampleRate: Int(targetSampleRate))
     
     var isListening: Bool { audioEngine.isRunning }
     
@@ -111,19 +119,19 @@ final class SpeechDetectionService {
             return false
         }
         
+        timestampEstimator = AudioTimestampEstimator(sourceSampleRate: tapFormat.sampleRate)
         print("[SpeechDetectionService] prepareEngine: Installing tap sampleRate=\(tapFormat.sampleRate) channels=\(tapFormat.channelCount)")
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { [weak self] buffer, when in
             guard let self = self else { return }
             
             self.processingQueue.async {
-                self.handleAudioBuffer(buffer)
+                self.handleAudioBuffer(buffer, time: when)
             }
         }
         
         audioEngine.prepare()
         do {
             try audioEngine.start()
-            beginBackgroundTask()
             postStateChange()
             print("[SpeechDetectionService] prepareEngine: Audio engine started")
             return true
@@ -134,34 +142,79 @@ final class SpeechDetectionService {
         }
     }
     
-    private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+    private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, time: AVAudioTime) {
         let samples = downsampler.convert(buffer: buffer)
         guard !samples.isEmpty else {
             print("[SpeechDetectionService] handleAudioBuffer: Downsampler returned empty sample array")
             return
         }
         
+        let bufferDate = timestampEstimator?.bufferStartDate(for: time, frameLength: buffer.frameLength) ?? Date()
+        if sessionStartDate == nil {
+            sessionStartDate = bufferDate
+            let timestamp = String(format: "%.3f", bufferDate.timeIntervalSince1970)
+            print("[SpeechDetectionService] handleAudioBuffer: Session start anchored at epoch \(timestamp)s")
+        }
         let windows = slidingBuffer.append(samples)
-        if !windows.isEmpty {
-            print("[SpeechDetectionService] handleAudioBuffer: Generated \(windows.count) windows from \(samples.count) samples")
-        }
-        guard let processor = whisperProcessor else {
-            print("[SpeechDetectionService][ERROR] handleAudioBuffer: Whisper processor unavailable during audio handling")
-            return
-        }
+        guard !windows.isEmpty else { return }
+        
+        print("[SpeechDetectionService] handleAudioBuffer: Generated \(windows.count) windows from \(samples.count) samples")
         guard !keywordCache.isEmpty else {
             print("[SpeechDetectionService] handleAudioBuffer: Skipping transcription because keyword cache is empty")
             return
         }
         
-        for window in windows {
-            processor.transcribe(samples: window, completionQueue: processingQueue) { [weak self] transcript in
-                guard let self = self else { return }
-                guard !transcript.isEmpty else { return }
-                
-                self.evaluateTranscription(transcript)
-            }
+        guard let baseDate = sessionStartDate else {
+            print("[SpeechDetectionService][ERROR] handleAudioBuffer: Missing session start date while windows ready")
+            return
         }
+        
+        for window in windows {
+            let relativeOffset = Double(window.startSampleIndex) / targetSampleRate
+            let windowStartDate = baseDate.addingTimeInterval(relativeOffset)
+            enqueueWindow(samples: window.samples, startDate: windowStartDate)
+        }
+    }
+    
+    private func submitTranscription(with processor: WhisperRealtimeProcessor, samples: [Float], startDate: Date) -> Bool {
+        return processor.transcribe(samples: samples, startDate: startDate, completionQueue: processingQueue) { [weak self] result in
+            guard let self = self else { return }
+            self.evaluateTranscription(result)
+            self.processPendingWindowIfNeeded()
+        }
+    }
+    
+    private func enqueueWindow(samples: [Float], startDate: Date) {
+        guard let processor = whisperProcessor, processor.isOperational else {
+            print("[SpeechDetectionService][ERROR] enqueueWindow: Whisper processor unavailable or not operational")
+            return
+        }
+        
+        if submitTranscription(with: processor, samples: samples, startDate: startDate) {
+            return
+        }
+        
+        let offset = sessionStartDate.map { startDate.timeIntervalSince($0) } ?? 0
+        print(String(format: "[SpeechDetectionService] enqueueWindow: Processor busy, deferring window offset=%.2fs", offset))
+        pendingWindow = PendingWindow(samples: samples, startDate: startDate)
+    }
+    
+    private func processPendingWindowIfNeeded() {
+        guard let deferred = pendingWindow else { return }
+        guard let processor = whisperProcessor, processor.isOperational else {
+            print("[SpeechDetectionService][ERROR] processPendingWindowIfNeeded: Whisper processor unavailable during retry")
+            pendingWindow = nil
+            return
+        }
+        
+        pendingWindow = nil
+        if submitTranscription(with: processor, samples: deferred.samples, startDate: deferred.startDate) {
+            return
+        }
+        
+        let offset = sessionStartDate.map { deferred.startDate.timeIntervalSince($0) } ?? 0
+        print(String(format: "[SpeechDetectionService][ERROR] processPendingWindowIfNeeded: Processor still busy for deferred window offset=%.2fs", offset))
+        pendingWindow = deferred
     }
     
     private func reloadKeywordCache() {
@@ -192,15 +245,32 @@ final class SpeechDetectionService {
         print("[SpeechDetectionService] reloadKeywordCache: Cached \(keywords.count) enabled keywords with \(variations) variations (normalized=\(normalizedCount))")
     }
     
-    private func evaluateTranscription(_ transcript: String) {
-        print("[SpeechDetectionService] evaluateTranscription: Transcript='\(transcript)'")
+    private func evaluateTranscription(_ result: WhisperTranscriptionResult) {
+        guard !result.transcript.isEmpty else {
+            print("[SpeechDetectionService] evaluateTranscription: Received empty transcript window")
+            return
+        }
+        
+        let transcript = result.transcript
+        print(String(format: "[SpeechDetectionService] evaluateTranscription: Transcript='%@' startOffset=%.2fs endOffset=%.2fs", transcript, result.startOffset, result.endOffset))
         let normalizedTranscript = transcript.normalizedForKeywordMatching()
         print("[SpeechDetectionService] evaluateTranscription: Normalized='\(normalizedTranscript)' length=\(normalizedTranscript.count)")
         guard !normalizedTranscript.isEmpty else { return }
         let transcriptTokens = normalizedTranscript.split(separator: " ").map(String.init)
         guard !transcriptTokens.isEmpty else { return }
         
-        let now = Date()
+        var tokenOffsets: [Int] = []
+        tokenOffsets.reserveCapacity(transcriptTokens.count)
+        var runningOffset = 0
+        for (index, token) in transcriptTokens.enumerated() {
+            tokenOffsets.append(runningOffset)
+            runningOffset += token.count
+            if index < transcriptTokens.count - 1 {
+                runningOffset += 1
+            }
+        }
+        
+        let normalizedLength = runningOffset
         for keyword in keywordCache {
             guard let normalizedEntries = normalizedVariationCache[keyword.id] else {
                 print("[SpeechDetectionService][ERROR] evaluateTranscription: Missing normalized variations for keyword \(keyword.name)")
@@ -212,43 +282,45 @@ final class SpeechDetectionService {
             }
             
             for entry in normalizedEntries {
-                if transcriptTokens.containsSequence(entry.tokens) {
-                    if let last = detectionCooldowns[keyword.id], now.timeIntervalSince(last) < cooldownInterval {
-                        print("[SpeechDetectionService] evaluateTranscription: Cooldown active for keyword \(keyword.name)")
-                        continue
-                    }
-                    
-                    detectionCooldowns[keyword.id] = now
-                    handleDetection(keyword: keyword, variation: entry.variation, transcript: transcript)
-                    return
+                guard let matchIndex = transcriptTokens.firstIndexOfSequence(entry.tokens) else { continue }
+                
+                let detectionDate = detectionDate(forMatchAt: matchIndex, entry: entry, tokenOffsets: tokenOffsets, normalizedLength: normalizedLength, result: result)
+                if let last = detectionCooldowns[keyword.id], detectionDate.timeIntervalSince(last) < cooldownInterval {
+                    print("[SpeechDetectionService] evaluateTranscription: Cooldown active for keyword \(keyword.name)")
+                    continue
                 }
+                
+                detectionCooldowns[keyword.id] = detectionDate
+                handleDetection(keyword: keyword, variation: entry.variation, transcript: transcript, detectionDate: detectionDate)
+                
+                return
             }
         }
     }
     
-    private func handleDetection(keyword: Keyword, variation: Variation, transcript: String) {
-        print("[SpeechDetectionService] handleDetection: Keyword=\(keyword.name) variation=\(variation.name) transcript=\(transcript)")
+    private func detectionDate(forMatchAt tokenIndex: Int, entry: NormalizedVariationEntry, tokenOffsets: [Int], normalizedLength: Int, result: WhisperTranscriptionResult) -> Date {
+        let baseDate = result.windowStartDate.addingTimeInterval(result.startOffset)
+        let duration = result.segmentDuration
+        guard tokenIndex < tokenOffsets.count else { return baseDate }
+        guard normalizedLength > 0, duration > 0 else { return baseDate }
+        
+        let startOffset = tokenOffsets[tokenIndex]
+        var matchLength = entry.tokens.reduce(0) { $0 + $1.count }
+        if entry.tokens.count > 1 {
+            matchLength += entry.tokens.count - 1
+        }
+        
+        let midpoint = startOffset + max(matchLength - 1, 0) / 2
+        let divisor = max(normalizedLength - 1, 1)
+        let ratio = max(0, min(Double(midpoint) / Double(divisor), 1))
+        
+        return baseDate.addingTimeInterval(ratio * duration)
+    }
+    
+    private func handleDetection(keyword: Keyword, variation: Variation, transcript: String, detectionDate: Date) {
+        print("[SpeechDetectionService] handleDetection: Keyword=\(keyword.name) variation=\(variation.name) transcript=\(transcript) detectionTime=\(detectionDate)")
         PavlokService.shared.sendZap(for: keyword)
-        NotificationManager.sendDetectionNotification(for: keyword, variation: variation)
-    }
-    
-    private func beginBackgroundTask() {
-        DispatchQueue.main.async {
-            guard self.backgroundTask == .invalid else { return }
-            self.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SpeechDetection") { [weak self] in
-                self?.endBackgroundTask()
-            }
-            print("[SpeechDetectionService] beginBackgroundTask: Background task started")
-        }
-    }
-    
-    private func endBackgroundTask() {
-        DispatchQueue.main.async {
-            guard self.backgroundTask != .invalid else { return }
-            UIApplication.shared.endBackgroundTask(self.backgroundTask)
-            self.backgroundTask = .invalid
-            print("[SpeechDetectionService] endBackgroundTask: Background task ended")
-        }
+        NotificationManager.sendDetectionNotification(for: keyword, variation: variation, detectionDate: detectionDate)
     }
     
     private func postStateChange() {
@@ -320,6 +392,10 @@ final class SpeechDetectionService {
                 self.reloadKeywordCache()
                 self.slidingBuffer.reset()
                 self.detectionCooldowns.removeAll()
+                self.downsampler.reset()
+                self.timestampEstimator = nil
+                self.sessionStartDate = nil
+                self.pendingWindow = nil
                 print("[SpeechDetectionService] startListening: Cleared buffers and cooldowns prior to session start")
                 
                 let sessionConfigured = self.configureSession()
@@ -358,7 +434,10 @@ final class SpeechDetectionService {
             self.audioEngine.reset()
             self.slidingBuffer.reset()
             self.detectionCooldowns.removeAll()
-            self.endBackgroundTask()
+            self.pendingWindow = nil
+            self.sessionStartDate = nil
+            self.timestampEstimator = nil
+            self.downsampler.reset()
             self.deactivateSession()
             self.postStateChange()
             print("[SpeechDetectionService] stopListening: Audio engine stopped")

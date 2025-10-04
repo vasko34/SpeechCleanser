@@ -9,12 +9,15 @@ import Foundation
 
 class WhisperRealtimeProcessor {
     private let inferenceQueue = DispatchQueue(label: "WhisperRealtimeProcessor.inference", qos: .userInitiated)
+    private let stateQueue = DispatchQueue(label: "WhisperRealtimeProcessor.state")
     private let context: OpaquePointer
     private let state: OpaquePointer
     private let baseSampleRate: Int32 = 16_000
-    private let maxTokens: Int32 = 64
+    private let maxTokens: Int32 = 48
     private let configuration: WhisperConfiguration
     private let modelURL: URL
+    
+    private var isBusyFlag: Bool = false
     private(set) var isOperational: Bool = false
     
     init?(modelURL: URL, configuration: WhisperConfiguration) {
@@ -77,25 +80,39 @@ class WhisperRealtimeProcessor {
         return (rms, peak)
     }
     
-    func transcribe(samples: [Float], completionQueue: DispatchQueue, completion: @escaping (String) -> Void) {
+    @discardableResult
+    func transcribe(samples: [Float], startDate: Date, completionQueue: DispatchQueue, completion: @escaping (WhisperTranscriptionResult) -> Void) -> Bool {
         guard isOperational else {
-            completionQueue.async {
-                completion("")
-            }
             print("[WhisperRealtimeProcessor][ERROR] transcribe: Processor not operational for model \(modelURL.lastPathComponent)")
-            return
+            return false
         }
         
         guard !samples.isEmpty else {
             print("[WhisperRealtimeProcessor] transcribe: Received empty sample buffer")
-            completionQueue.async {
-                completion("")
+            return false
+        }
+        
+        var accepted = false
+        stateQueue.sync {
+            if !isBusyFlag {
+                isBusyFlag = true
+                accepted = true
             }
-            return
+        }
+        
+        guard accepted else {
+            print("[WhisperRealtimeProcessor] transcribe: Busy with existing inference, skipping new window")
+            return false
         }
         
         inferenceQueue.async { [weak self] in
             guard let self = self else { return }
+            
+            defer {
+                self.stateQueue.sync {
+                    self.isBusyFlag = false
+                }
+            }
             
             let durationMillisecondsDouble = self.configuration.windowDuration * 1000.0
             let clampedDuration = max(1.0, min(Double(Int32.max), durationMillisecondsDouble))
@@ -107,11 +124,11 @@ class WhisperRealtimeProcessor {
             params.translate = false
             params.single_segment = true
             params.no_context = true
-            params.no_timestamps = true
+            params.no_timestamps = false
             params.detect_language = false
             params.n_max_text_ctx = 0
             params.temperature = 0.2
-            params.temperature_inc = 0.2
+            params.temperature_inc = 0
             params.n_threads = Int32(max(1, ProcessInfo.processInfo.processorCount - 1))
             params.max_tokens = self.maxTokens
             params.duration_ms = durationMilliseconds
@@ -140,19 +157,14 @@ class WhisperRealtimeProcessor {
             }
             
             let requestedSamples = samples.count
-            if requestedSamples == 0 {
-                completionQueue.async {
-                    completion("")
-                }
-                print("[WhisperRealtimeProcessor][ERROR] transcribe: Sample buffer unexpectedly empty prior to inference")
-                return
-            }
-                      
             if requestedSamples > Int(Int32.max) {
-                completionQueue.async {
-                    completion("")
-                }
                 print("[WhisperRealtimeProcessor][ERROR] transcribe: Sample buffer exceeds Int32 capacity with \(requestedSamples) samples")
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
+                
+                completionQueue.async {
+                    completion(empty)
+                }
+                
                 return
             }
                       
@@ -161,8 +173,9 @@ class WhisperRealtimeProcessor {
             
             if amplitude.peak < 0.00018 && amplitude.rms < 0.00009 {
                 print("[WhisperRealtimeProcessor] transcribe: Skipping inference due to low energy window")
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
                 completionQueue.async {
-                    completion("")
+                    completion(empty)
                 }
                 return
             }
@@ -184,8 +197,9 @@ class WhisperRealtimeProcessor {
             
             if resultCode != 0 {
                 print("[WhisperRealtimeProcessor][ERROR] transcribe: whisper_full failed with code \(resultCode) requestedSamples=\(requestedSamples)")
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
                 completionQueue.async {
-                    completion("")
+                    completion(empty)
                 }
                 return
             }
@@ -193,12 +207,15 @@ class WhisperRealtimeProcessor {
             let segmentCount = whisper_full_n_segments_from_state(self.state)
             if segmentCount <= 0 {
                 print("[WhisperRealtimeProcessor] transcribe: No segments detected in current window")
+                let empty = WhisperTranscriptionResult(transcript: "", windowStartDate: startDate, startOffset: 0, endOffset: 0)
                 completionQueue.async {
-                    completion("")
+                    completion(empty)
                 }
                 return
             }
             
+            var earliestStart = TimeInterval.greatestFiniteMagnitude
+            var latestEnd: TimeInterval = 0
             var transcript = ""
             transcript.reserveCapacity(256)
             
@@ -206,6 +223,16 @@ class WhisperRealtimeProcessor {
                 if let textPointer = whisper_full_get_segment_text_from_state(self.state, index) {
                     let segment = String(cString: textPointer)
                     transcript.append(segment)
+                }
+                
+                let startTicks = whisper_full_get_segment_t0_from_state(self.state, index)
+                if startTicks >= 0 {
+                    earliestStart = min(earliestStart, Double(startTicks) / 100.0)
+                }
+                
+                let endTicks = whisper_full_get_segment_t1_from_state(self.state, index)
+                if endTicks >= 0 {
+                    latestEnd = max(latestEnd, Double(endTicks) / 100.0)
                 }
             }
             
@@ -215,11 +242,24 @@ class WhisperRealtimeProcessor {
             if normalized.isEmpty {
                 print("[WhisperRealtimeProcessor] transcribe: Normalized transcript empty after trimming")
             }
-            print("[WhisperRealtimeProcessor] transcribe: Samples=\(requestedSamples) segments=\(segmentCount) duration=\(durationString)s result=\(normalized)")
+            
+            if earliestStart == TimeInterval.greatestFiniteMagnitude {
+                earliestStart = 0
+            }
+            
+            if latestEnd < earliestStart {
+                latestEnd = earliestStart
+            }
+            
+            print("[WhisperRealtimeProcessor] transcribe: Samples=\(requestedSamples) segments=\(segmentCount) duration=\(durationString)s windowOffsets=\(String(format: "%.2f", earliestStart))s-\(String(format: "%.2f", latestEnd))s result=\(normalized)")
+
+            let result = WhisperTranscriptionResult(transcript: normalized, windowStartDate: startDate, startOffset: earliestStart, endOffset: latestEnd)
             
             completionQueue.async {
-                completion(normalized)
+                completion(result)
             }
         }
+        
+        return true
     }
 }

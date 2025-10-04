@@ -263,14 +263,29 @@ final class SpeechDetectionService {
         print(String(format: "[SpeechDetectionService] evaluateTranscription: Transcript='%@' startOffset=%.2fs endOffset=%.2fs", transcript, result.startOffset, result.endOffset))
         
         let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        var effectiveTranscript = trimmedTranscript
         if trimmedTranscript.hasPrefix("[") && trimmedTranscript.hasSuffix("]") {
-            print("[SpeechDetectionService] evaluateTranscription: Ignoring bracketed transcript '\(trimmedTranscript)'")
+            let startIndex = trimmedTranscript.index(after: trimmedTranscript.startIndex)
+            let endIndex = trimmedTranscript.index(before: trimmedTranscript.endIndex)
+            let inner = trimmedTranscript[startIndex..<endIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            guard !inner.isEmpty else {
+                print("[SpeechDetectionService][ERROR] evaluateTranscription: Bracketed transcript with empty inner content '\(trimmedTranscript)'")
+                return
+            }
+            
+            effectiveTranscript = inner
+            print("[SpeechDetectionService] evaluateTranscription: Using bracketed content '\(inner)' for keyword matching")
+        }
+        
+        print("[SpeechDetectionService] evaluateTranscription: EffectiveTranscript='\(effectiveTranscript)'")
+        let normalizedTranscript = effectiveTranscript.normalizedForKeywordMatching()
+        print("[SpeechDetectionService] evaluateTranscription: Normalized='\(normalizedTranscript)' length=\(normalizedTranscript.count)")
+        guard !normalizedTranscript.isEmpty else {
+            print("[SpeechDetectionService][ERROR] evaluateTranscription: Normalized transcript empty after processing")
             return
         }
         
-        let normalizedTranscript = transcript.normalizedForKeywordMatching()
-        print("[SpeechDetectionService] evaluateTranscription: Normalized='\(normalizedTranscript)' length=\(normalizedTranscript.count)")
-        guard !normalizedTranscript.isEmpty else { return }
         let transcriptTokens = normalizedTranscript.split(separator: " ").map(String.init)
         guard !transcriptTokens.isEmpty else { return }
         

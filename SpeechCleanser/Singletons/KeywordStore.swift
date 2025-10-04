@@ -17,14 +17,6 @@ final class KeywordStore {
     private let decoder = JSONDecoder()
     private let notificationCenter = NotificationCenter.default
     
-    static func documentsURL() -> URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-    }
-    
-    static func fileURL(for filename: String) -> URL {
-        documentsURL().appendingPathComponent(filename)
-    }
-    
     func load() -> [Keyword] {
         guard let data = userDefaults.data(forKey: defaultsKey) else { return [] }
         

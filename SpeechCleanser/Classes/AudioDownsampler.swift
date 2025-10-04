@@ -45,6 +45,8 @@ class AudioDownsampler {
                 print("[AudioDownsampler][ERROR] convert: Failed to create AVAudioConverter from format \(buffer.format)")
                 return []
             }
+            converter?.downmix = true
+            converter?.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Normal
         }
         
         guard let converter else {
@@ -59,7 +61,14 @@ class AudioDownsampler {
         }
         
         var conversionError: NSError?
+        var hasProvidedBuffer = false
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if hasProvidedBuffer {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            
+            hasProvidedBuffer = true
             outStatus.pointee = .haveData
             return buffer
         }

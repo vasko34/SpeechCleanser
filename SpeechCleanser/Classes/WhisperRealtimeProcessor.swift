@@ -9,7 +9,6 @@ import Foundation
 
 class WhisperRealtimeProcessor {
     private let inferenceQueue = DispatchQueue(label: "WhisperRealtimeProcessor.inference", qos: .userInitiated)
-    private let stateQueue = DispatchQueue(label: "WhisperRealtimeProcessor.state")
     private let context: OpaquePointer
     private let state: OpaquePointer
     private let baseSampleRate: Int32 = 16_000
@@ -18,12 +17,16 @@ class WhisperRealtimeProcessor {
     private let modelURL: URL
     private let normalizer = AudioEnergyNormalizer()
     private let forcedLanguageID: Int32
+    private let busyLock = NSLock()
     
     private var isBusyFlag: Bool = false
     private(set) var isOperational: Bool = false
     
     var isBusy: Bool {
-        stateQueue.sync { isBusyFlag }
+        busyLock.lock()
+        let value = isBusyFlag
+        busyLock.unlock()
+        return value
     }
     
     init?(modelURL: URL, configuration: WhisperConfiguration) {
@@ -103,12 +106,12 @@ class WhisperRealtimeProcessor {
         
         let audioDuration = Double(samples.count) / Double(baseSampleRate)
         var accepted = false
-        stateQueue.sync {
-            if !isBusyFlag {
-                isBusyFlag = true
-                accepted = true
-            }
+        busyLock.lock()
+        if !isBusyFlag {
+            isBusyFlag = true
+            accepted = true
         }
+        busyLock.unlock()
         
         guard accepted else {
             print("[WhisperRealtimeProcessor] transcribe: Busy with existing inference, skipping new window")
@@ -119,9 +122,9 @@ class WhisperRealtimeProcessor {
             guard let self = self else { return }
             
             defer {
-                self.stateQueue.sync {
-                    self.isBusyFlag = false
-                }
+                self.busyLock.lock()
+                self.isBusyFlag = false
+                self.busyLock.unlock()
             }
             
             let durationMillisecondsDouble = self.configuration.windowDuration * 1000.0
@@ -134,7 +137,7 @@ class WhisperRealtimeProcessor {
             params.translate = false
             params.single_segment = true
             params.no_context = true
-            params.no_timestamps = false
+            params.no_timestamps = true
             params.detect_language = false
             params.n_max_text_ctx = 0
             params.temperature = 0.2
@@ -145,7 +148,7 @@ class WhisperRealtimeProcessor {
             params.offset_ms = 0
             params.prompt_tokens = nil
             params.prompt_n_tokens = 0
-            params.entropy_thold = 2.4
+            params.entropy_thold = -1.0
             params.logprob_thold = -1.0
             params.no_speech_thold = 0.35
             
@@ -272,7 +275,10 @@ class WhisperRealtimeProcessor {
             }
             
             let trimmedEarliest = max(0, min(earliestStart, audioDuration))
-            let trimmedLatest = max(trimmedEarliest, min(latestEnd, audioDuration))
+            var trimmedLatest = max(trimmedEarliest, min(latestEnd, audioDuration))
+            if params.no_timestamps {
+                trimmedLatest = audioDuration
+            }
             let detectedLanguageID = whisper_full_lang_id_from_state(self.state)
             if detectedLanguageID != self.forcedLanguageID {
                 let expected = whisper_lang_str_full(Int32(self.forcedLanguageID))

@@ -88,6 +88,15 @@ class WhisperRealtimeProcessor {
             return true
         }
         
+        let footprintBeforeReset = ProcessMetrics.memoryFootprint()
+        if let before = footprintBeforeReset {
+            let formatted = ProcessMetrics.formatted(bytes: before)
+            let total = ProcessMetrics.formatted(bytes: ProcessInfo.processInfo.physicalMemory)
+            print("[WhisperRealtimeProcessor] prepare: Starting load for model \(configuration.modelSize) footprint=\(formatted) totalMemory=\(total)")
+        } else {
+            print("[WhisperRealtimeProcessor] prepare: Starting load for model \(configuration.modelSize) (memory footprint unavailable)")
+        }
+        
         reset()
         guard let modelPath = configuration.modelURL()?.path else {
             print("[WhisperRealtimeProcessor][ERROR] prepare: Unable to locate model for size \(configuration.modelSize)")
@@ -97,6 +106,7 @@ class WhisperRealtimeProcessor {
         var contextParams = whisper_context_default_params()
         contextParams.use_gpu = true
         
+        let loadStart = Date()
         modelPath.withCString { pointer in
             context = whisper_init_from_file_with_params(pointer, contextParams)
         }
@@ -111,6 +121,14 @@ class WhisperRealtimeProcessor {
             print("[WhisperRealtimeProcessor][ERROR] prepare: Failed to initialize whisper state")
             reset()
             return false
+        }
+        
+        if let afterLoad = ProcessMetrics.memoryFootprint(), let before = footprintBeforeReset {
+            let delta = afterLoad > before ? afterLoad - before : 0
+            let formattedAfter = ProcessMetrics.formatted(bytes: afterLoad)
+            let formattedDelta = ProcessMetrics.formatted(bytes: delta)
+            let elapsed = String(format: "%.0fms", Date().timeIntervalSince(loadStart) * 1000)
+            print("[WhisperRealtimeProcessor] prepare: Model load complete footprint=\(formattedAfter) delta=\(formattedDelta) elapsed=\(elapsed)")
         }
         
         if let vadPath = configuration.vadURL()?.path {
@@ -155,6 +173,7 @@ class WhisperRealtimeProcessor {
         var newTokens: [whisper_token] = []
         var succeeded = false
         var decodeAttempted = false
+        let decodeStart = Date()
         
         let runDecode: (UnsafePointer<CChar>?) -> Void = { [weak self] suppressRegexPointer in
             guard let self else { return }
@@ -274,6 +293,14 @@ class WhisperRealtimeProcessor {
                 print("[WhisperRealtimeProcessor][ERROR] process: Failed to recreate decoding state after decode success")
                 reset()
             }
+        }
+        
+        if decodeAttempted {
+            let decodeDuration = Date().timeIntervalSince(decodeStart)
+            let rmsString = String(format: "%.4f", gateDecision.rms)
+            let thresholdString = gateDecision.usedSilero ? "silero" : String(format: "%.4f", gateDecision.threshold)
+            let durationString = String(format: "%.0fms", decodeDuration * 1000)
+            print("[WhisperRealtimeProcessor] process: Decoded \(segmentCount) segments duration=\(durationString) speechDetected=\(speechDetected) allowSilence=\(allowSilenceDecoding) rms=\(rmsString) threshold=\(thresholdString)")
         }
         
         return Output(results: collectedResults, speechDetected: speechDetected, didDecode: true, rmsLevel: gateDecision.rms, rmsThreshold: gateDecision.threshold, usedSileroVAD: gateDecision.usedSilero)

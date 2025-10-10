@@ -19,6 +19,7 @@ final class SpeechDetectionService {
     private let userDefaults = UserDefaults.standard
     private let modelPreferenceKey = "preferred_whisper_model_size"
     private let detectionProbabilityThreshold: Float = 0.35
+    private let detectionContextSeparators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
     private let notificationFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "bg_BG")
@@ -50,6 +51,8 @@ final class SpeechDetectionService {
     private var silenceChunkAllowance: Int = 0
     private var consecutiveSilenceChunks: Int = 0
     private var forcedDecodeIntervalChunks: Int = 0
+    private var detectionContext: String = ""
+    private var lastVariationTriggerTimes: [UUID: TimeInterval] = [:]
     
     private(set) var isListening = false
     private(set) var selectedModelSize: ModelSize
@@ -119,6 +122,8 @@ final class SpeechDetectionService {
         }
         zapCount = 0
         registerAudioNotifications()
+        detectionContext = ""
+        lastVariationTriggerTimes.removeAll(keepingCapacity: true)
 
         return true
     }
@@ -176,6 +181,8 @@ final class SpeechDetectionService {
         silenceChunkAllowance = 0
         consecutiveSilenceChunks = 0
         forcedDecodeIntervalChunks = 0
+        detectionContext = ""
+        lastVariationTriggerTimes.removeAll(keepingCapacity: true)
     }
     
     private func refreshKeywords() {
@@ -361,7 +368,8 @@ final class SpeechDetectionService {
         
         if filtered.isEmpty {
             for result in results {
-                logTranscription(result, flagged: false)
+                let sanitized = result.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                logTranscription(result, sanitizedText: sanitized, flagged: false)
             }
             print("[SpeechDetectionService] handleTranscriptions: All results fell below threshold")
             return
@@ -370,27 +378,54 @@ final class SpeechDetectionService {
         var triggeredVariations = Set<UUID>()
         for result in results {
             let passesThreshold = result.averageProbability >= detectionProbabilityThreshold
-            logTranscription(result, flagged: passesThreshold)
+            let sanitized = result.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            logTranscription(result, sanitizedText: sanitized, flagged: passesThreshold)
             guard passesThreshold else { continue }
             
-            let matches = matcher.matches(in: result.text)
+            var matches = matcher.matches(in: sanitized)
+            var usedContext = false
+            let previousContext = detectionContext
+            if matches.isEmpty, !detectionContext.isEmpty {
+                let contextualized = detectionContext + " " + sanitized
+                matches = matcher.matches(in: contextualized)
+                usedContext = !matches.isEmpty
+            }
+            
             if matches.isEmpty {
-                print("[SpeechDetectionService] handleTranscriptions: No keyword matches for text=\"\(result.text.replacingOccurrences(of: "\n", with: " "))\"")
+                if detectionContext.isEmpty {
+                    print("[SpeechDetectionService] handleTranscriptions: No keyword matches for text=\"\(sanitized)\"")
+                } else {
+                    print("[SpeechDetectionService] handleTranscriptions: No keyword matches for text=\"\(sanitized)\" contextTail=\"\(detectionContext)\"")
+                }
+                updateDetectionContext(with: sanitized)
                 continue
             }
             
             let variationList = matches.map { $0.variation.name }.joined(separator: ", ")
-            print("[SpeechDetectionService] handleTranscriptions: Matched variations=\(variationList)")
+            if usedContext {
+                print("[SpeechDetectionService] handleTranscriptions: Matched variations=\(variationList) usingContextTail=\"\(previousContext)\"")
+            } else {
+                print("[SpeechDetectionService] handleTranscriptions: Matched variations=\(variationList)")
+            }
             
             for match in matches where !triggeredVariations.contains(match.variation.id) {
                 triggeredVariations.insert(match.variation.id)
-                fireActions(for: match, spokenTime: result.endTime)
+                let spokenTime = result.endTime
+                if let lastTime = lastVariationTriggerTimes[match.variation.id], abs(lastTime - spokenTime) < 0.4 {
+                    let lastTimeString = String(format: "%.2f", lastTime)
+                    let currentTimeString = String(format: "%.2f", spokenTime)
+                    print("[SpeechDetectionService] handleTranscriptions: Skipping duplicate variation=\(match.variation.name) lastTime=\(lastTimeString)s currentTime=\(currentTimeString)s")
+                    continue
+                }
+                
+                lastVariationTriggerTimes[match.variation.id] = spokenTime
+                fireActions(for: match, spokenTime: spokenTime)
             }
+            updateDetectionContext(with: sanitized)
         }
     }
     
-    private func logTranscription(_ result: WhisperTranscriptionResult, flagged: Bool) {
-        let sanitizedText = result.text.replacingOccurrences(of: "\n", with: " ")
+    private func logTranscription(_ result: WhisperTranscriptionResult, sanitizedText: String, flagged: Bool) {
         let probability = String(format: "%.2f", result.averageProbability)
         let startTime = String(format: "%.2f", result.startTime)
         let endTime = String(format: "%.2f", result.endTime)
@@ -398,8 +433,40 @@ final class SpeechDetectionService {
         print("[SpeechDetectionService] logTranscription: text=\"\(sanitizedText)\" start=\(startTime)s end=\(endTime)s probability=\(probability) status=\(status)")
     }
     
+    private func updateDetectionContext(with sanitizedText: String) {
+        let trimmed = sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            if !detectionContext.isEmpty {
+                detectionContext = ""
+                print("[SpeechDetectionService] updateDetectionContext: contextTail=<cleared>")
+            }
+            return
+        }
+        
+        let components = trimmed.components(separatedBy: detectionContextSeparators).filter { !$0.isEmpty }
+        guard !components.isEmpty else {
+            if !detectionContext.isEmpty {
+                detectionContext = ""
+                print("[SpeechDetectionService] updateDetectionContext: contextTail=<cleared>")
+            }
+            return
+        }
+        
+        let tail = components.suffix(4)
+        let newContext = tail.joined(separator: " ")
+        if detectionContext != newContext {
+            let displayValue = newContext.isEmpty ? "<empty>" : newContext
+            print("[SpeechDetectionService] updateDetectionContext: contextTail=\"\(displayValue)\"")
+            detectionContext = newContext
+        }
+    }
+    
     private func fireActions(for match: KeywordDetectionMatch, spokenTime: TimeInterval) {
-        guard let baseDate = captureStartDate else { return }
+        guard let baseDate = captureStartDate else {
+            print("[SpeechDetectionService][ERROR] fireActions: Missing capture start date for variation=\(match.variation.name)")
+            return
+        }
+        
         let spokenDate = baseDate.addingTimeInterval(spokenTime)
         let spokenTimeString = notificationFormatter.string(from: spokenDate)
         print("[SpeechDetectionService] fireActions: Detected variation=\(match.variation.name) at \(spokenTimeString)")

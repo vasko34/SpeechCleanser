@@ -41,7 +41,7 @@ struct WhisperConfiguration {
             threads: threads,
             beamSize: 5,
             bestOf: 5,
-            temperatureFallback: [0.2, 0.4, 0.6],
+            temperatureFallback: [0.0, 0.2, 0.4, 0.6],
             suppressNumerals: false,
             contextTokenCount: 12
         )

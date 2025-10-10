@@ -8,37 +8,21 @@
 import Foundation
 
 class KeywordMatcher {
+    private struct PreparedVariation {
+        let variation: Variation
+        let normalized: String
+        let tokens: [String]
+    }
+    
+    private struct PreparedKeyword {
+        let keyword: Keyword
+        let variations: [PreparedVariation]
+    }
+    
     private let locale = Locale(identifier: "bg_BG")
     private let whitespace = CharacterSet.whitespacesAndNewlines
-    
-    func matches(in text: String, keywords: [Keyword]) -> [KeywordDetectionMatch] {
-        let enabledKeywords = keywords.filter { $0.isEnabled }
-        guard !enabledKeywords.isEmpty else { return [] }
-        
-        let normalizedText = normalize(text)
-        guard !normalizedText.isEmpty else { return [] }
-        
-        let tokens = tokenized(normalizedText)
-        var results: [KeywordDetectionMatch] = []
-        
-        for keyword in enabledKeywords {
-            for variation in keyword.variations {
-                let normalizedVariation = normalize(variation.name)
-                guard !normalizedVariation.isEmpty else { continue }
-                
-                if normalizedText.contains(normalizedVariation) {
-                    results.append(KeywordDetectionMatch(keyword: keyword, variation: variation))
-                    continue
-                }
-                
-                if fuzzyMatch(variation: normalizedVariation, in: tokens) {
-                    results.append(KeywordDetectionMatch(keyword: keyword, variation: variation))
-                }
-            }
-        }
-        
-        return results
-    }
+    private let lock = NSLock()
+    private var preparedKeywords: [PreparedKeyword] = []
     
     private func normalize(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: whitespace)
@@ -63,10 +47,7 @@ class KeywordMatcher {
         text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).map(String.init)
     }
     
-    private func fuzzyMatch(variation: String, in tokens: [String]) -> Bool {
-        let variationTokens = tokenized(variation)
-        guard !variationTokens.isEmpty else { return false }
-        
+    private func fuzzyMatch(variationTokens: [String], normalizedVariation: String, in tokens: [String]) -> Bool {
         if variationTokens.count == 1 {
             let target = variationTokens[0]
             for token in tokens {
@@ -82,7 +63,7 @@ class KeywordMatcher {
         
         for index in 0...(tokens.count - length) {
             let window = tokens[index..<(index + length)].joined(separator: " ")
-            if window == variation || levenshteinDistance(between: window, and: variation) <= 1 {
+            if window == normalizedVariation || levenshteinDistance(between: window, and: normalizedVariation) <= 1 {
                 return true
             }
         }
@@ -114,5 +95,59 @@ class KeywordMatcher {
         }
         
         return previousRow[rhsChars.count]
+    }
+    
+    func updateKeywords(_ keywords: [Keyword]) {
+        var prepared: [PreparedKeyword] = []
+        prepared.reserveCapacity(keywords.count)
+        
+        for keyword in keywords where keyword.isEnabled {
+            var preparedVariations: [PreparedVariation] = []
+            preparedVariations.reserveCapacity(keyword.variations.count)
+            
+            for variation in keyword.variations {
+                let normalized = normalize(variation.name)
+                guard !normalized.isEmpty else { continue }
+                let tokens = tokenized(normalized)
+                guard !tokens.isEmpty else { continue }
+                preparedVariations.append(PreparedVariation(variation: variation, normalized: normalized, tokens: tokens))
+            }
+            
+            if !preparedVariations.isEmpty {
+                prepared.append(PreparedKeyword(keyword: keyword, variations: preparedVariations))
+            }
+        }
+        
+        lock.lock()
+        preparedKeywords = prepared
+        lock.unlock()
+    }
+    
+    func matches(in text: String) -> [KeywordDetectionMatch] {
+        let normalizedText = normalize(text)
+        guard !normalizedText.isEmpty else { return [] }
+        
+        lock.lock()
+        let prepared = preparedKeywords
+        lock.unlock()
+        guard !prepared.isEmpty else { return [] }
+        
+        let tokens = tokenized(normalizedText)
+        var results: [KeywordDetectionMatch] = []
+        
+        for preparedKeyword in prepared {
+            for preparedVariation in preparedKeyword.variations {
+                if normalizedText.contains(preparedVariation.normalized) {
+                    results.append(KeywordDetectionMatch(keyword: preparedKeyword.keyword, variation: preparedVariation.variation))
+                    continue
+                }
+                
+                if fuzzyMatch(variationTokens: preparedVariation.tokens, normalizedVariation: preparedVariation.normalized, in: tokens) {
+                    results.append(KeywordDetectionMatch(keyword: preparedKeyword.keyword, variation: preparedVariation.variation))
+                }
+            }
+        }
+        
+        return results
     }
 }

@@ -102,7 +102,7 @@ class WhisperRealtimeProcessor {
         return true
     }
     
-    func process(samples: [Float], chunkStartTime: TimeInterval) -> Output? {
+    func process(samples: [Float], chunkStartTime: TimeInterval, allowSilenceDecoding: Bool) -> Output? {
         guard !samples.isEmpty else { return nil }
         guard let configuration = configuration, let context = context, let state = state else {
             print("[WhisperRealtimeProcessor][ERROR] process: Processor not prepared")
@@ -110,9 +110,14 @@ class WhisperRealtimeProcessor {
         }
         
         let speechDetected = detectSpeech(samples: samples)
+        if !speechDetected && !allowSilenceDecoding {
+            return Output(results: [], speechDetected: false, didDecode: false)
+        }
+        
         var collectedResults: [WhisperTranscriptionResult] = []
         var newTokens: [whisper_token] = []
         var succeeded = false
+        var decodeAttempted = false
         
         languageBytes.withUnsafeBufferPointer { languagePointer in
             contextTokens.withUnsafeBufferPointer { promptPointer in
@@ -143,8 +148,12 @@ class WhisperRealtimeProcessor {
                         params.prompt_n_tokens = Int32(promptPointer.count)
                         params.suppress_blank = true
                         params.suppress_nst = false
+                        params.suppress_numerals = configuration.suppressNumerals
+                        params.n_threads = configuration.threads
+                        params.n_max_text_ctx = Int32(configuration.contextTokenCount)
                         
                         let status = whisper_full_with_state(context, state, params, baseAddress, Int32(samples.count))
+                        decodeAttempted = true
                         if status == 0 {
                             succeeded = true
                             break
@@ -157,7 +166,10 @@ class WhisperRealtimeProcessor {
         }
         
         guard succeeded else {
-            return Output(results: [], speechDetected: speechDetected)
+            if decodeAttempted {
+                whisper_reset_state(state)
+            }
+            return Output(results: [], speechDetected: speechDetected, didDecode: true)
         }
         
         let segmentCount = whisper_full_n_segments_from_state(state)
@@ -165,6 +177,7 @@ class WhisperRealtimeProcessor {
         
         for index in 0..<segmentCount {
             guard let textPointer = whisper_full_get_segment_text_from_state(state, index) else { continue }
+            
             let rawText = String(cString: textPointer)
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
@@ -198,7 +211,11 @@ class WhisperRealtimeProcessor {
             }
         }
         
-        return Output(results: collectedResults, speechDetected: speechDetected)
+        if decodeAttempted {
+            whisper_reset_state(state)
+        }
+        
+        return Output(results: collectedResults, speechDetected: speechDetected, didDecode: true)
     }
     
     func reset() {

@@ -33,7 +33,7 @@ enum NotificationManager {
         content.title = "Keyword Detected"
         
         let spokenTime = detectionFormatter.string(from: spokenDate)
-        content.body = "Keyword: \(keyword.name), Variation: \(variation) – detected at: \(spokenTime)"
+        content.body = "Keyword: \(keyword.name), Variation: \(variation.name) – spoken at: \(spokenTime)"
         content.sound = .default
         
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)

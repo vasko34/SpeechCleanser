@@ -12,12 +12,13 @@ import UIKit
 final class SpeechDetectionService {
     static let shared = SpeechDetectionService()
     
-    private let processingQueue = DispatchQueue(label: "com.speechcleanser.processing", qos: .userInitiated)
+    private let processingQueue = DispatchQueue(label: "com.speechcleanser.processing", qos: .userInitiated, attributes: [], autoreleaseFrequency: .workItem, target: nil)
     private let matcher = KeywordMatcher()
     private let whisperProcessor = WhisperRealtimeProcessor()
     private let session = AVAudioSession.sharedInstance()
     private let userDefaults = UserDefaults.standard
     private let modelPreferenceKey = "preferred_whisper_model_size"
+    private let detectionProbabilityThreshold: Float = 0.35
     private let notificationFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "bg_BG")
@@ -46,6 +47,7 @@ final class SpeechDetectionService {
     private var vadWindow: [Bool] = []
     private var lastLatencyAlertDate: Date?
     private var lastVADDutyAlertDate: Date?
+    private var silenceChunkAllowance: Int = 0
     
     private(set) var isListening = false
     private(set) var selectedModelSize: ModelSize
@@ -97,6 +99,7 @@ final class SpeechDetectionService {
         consecutiveHighLatencyDuration = 0
         lastLatencyAlertDate = nil
         lastVADDutyAlertDate = nil
+        silenceChunkAllowance = 0
         
         UIDevice.current.isBatteryMonitoringEnabled = true
         metricsStartDate = Date()
@@ -160,11 +163,16 @@ final class SpeechDetectionService {
         metricsStartDate = nil
         metricsBatteryLevel = -1
         lastZapDate = nil
+        silenceChunkAllowance = 0
     }
     
     private func refreshKeywords() {
         keywords = KeywordStore.shared.load()
-        print("[SpeechDetectionService] refreshKeywords: Loaded \(keywords.count) keywords")
+        matcher.updateKeywords(keywords)
+        let enabledKeywords = keywords.filter { $0.isEnabled }
+        let enabledCount = enabledKeywords.count
+        let variationCount = enabledKeywords.reduce(0) { $0 + $1.variations.count }
+        print("[SpeechDetectionService] refreshKeywords: Loaded \(keywords.count) keywords enabled=\(enabledCount) variationCount=\(variationCount)")
     }
     
     private func configureAudioSession(configuration: WhisperConfiguration) -> Bool {
@@ -290,7 +298,20 @@ final class SpeechDetectionService {
     
     private func processChunk(_ chunk: [Float], startTime: TimeInterval, configuration: WhisperConfiguration) {
         let processingStart = Date()
-        guard let output = whisperProcessor.process(samples: chunk, chunkStartTime: startTime) else { return }
+        let allowSilenceDecoding = silenceChunkAllowance > 0
+        guard let output = whisperProcessor.process(samples: chunk, chunkStartTime: startTime, allowSilenceDecoding: allowSilenceDecoding) else { return }
+        
+        if output.speechDetected {
+            let holdChunks = max(2, Int(ceil(0.6 / configuration.strideDuration)))
+            silenceChunkAllowance = holdChunks
+        } else if silenceChunkAllowance > 0 {
+            silenceChunkAllowance -= 1
+        }
+        
+        if !output.didDecode {
+            print("[SpeechDetectionService] processChunk: Skipped decode for silence (allowanceRemaining=\(silenceChunkAllowance))")
+            return
+        }
         
         let latency = Date().timeIntervalSince(processingStart)
         updateMetrics(latency: latency, speechDetected: output.speechDetected, configuration: configuration)
@@ -299,12 +320,18 @@ final class SpeechDetectionService {
     
     private func handleTranscriptions(_ results: [WhisperTranscriptionResult]) {
         guard !results.isEmpty else { return }
-        let filtered = results.filter { $0.averageProbability >= 0.5 }
+        let filtered = results.filter { $0.averageProbability >= detectionProbabilityThreshold }
         guard !filtered.isEmpty else { return }
         
         var triggeredVariations = Set<UUID>()
         for result in filtered {
-            let matches = matcher.matches(in: result.text, keywords: keywords)
+            let sanitizedText = result.text.replacingOccurrences(of: "\n", with: " ")
+            let probability = String(format: "%.2f", result.averageProbability)
+            let startTime = String(format: "%.2f", result.startTime)
+            let endTime = String(format: "%.2f", result.endTime)
+            print("[SpeechDetectionService] handleTranscriptions: Candidate text=\"\(sanitizedText)\" start=\(startTime)s end=\(endTime)s probability=\(probability)")
+            
+            let matches = matcher.matches(in: result.text)
             guard !matches.isEmpty else { continue }
             
             for match in matches where !triggeredVariations.contains(match.variation.id) {

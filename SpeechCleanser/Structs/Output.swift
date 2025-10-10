@@ -10,4 +10,5 @@ import Foundation
 struct Output {
     let results: [WhisperTranscriptionResult]
     let speechDetected: Bool
+    let didDecode: Bool
 }

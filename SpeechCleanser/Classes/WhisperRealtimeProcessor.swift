@@ -8,6 +8,13 @@
 import Accelerate
 
 class WhisperRealtimeProcessor {
+    private struct SpeechGateDecision {
+        let isSpeech: Bool
+        let rms: Float
+        let threshold: Float
+        let usedSilero: Bool
+    }
+    
     private var configuration: WhisperConfiguration?
     private var context: OpaquePointer?
     private var state: OpaquePointer?
@@ -22,28 +29,35 @@ class WhisperRealtimeProcessor {
         reset()
     }
     
-    private func detectSpeech(samples: [Float]) -> Bool {
-        if let vadContext = vadContext {
-            return samples.withUnsafeBufferPointer { pointer in
-                guard let baseAddress = pointer.baseAddress else { return false }
-                return whisper_vad_detect_speech(vadContext, baseAddress, Int32(samples.count))
-            }
-        }
-        
+    private func detectSpeech(samples: [Float]) -> SpeechGateDecision {
         var energy: Float = 0
         samples.withUnsafeBufferPointer { pointer in
             guard let baseAddress = pointer.baseAddress else { return }
             vDSP_measqv(baseAddress, 1, &energy, vDSP_Length(samples.count))
         }
         
+        if energy < 0 {
+            energy = 0
+        }
+        
         let rms = sqrtf(energy)
+        
+        if let vadContext = vadContext {
+            let detected = samples.withUnsafeBufferPointer { pointer in
+                guard let baseAddress = pointer.baseAddress else { return false }
+                return whisper_vad_detect_speech(vadContext, baseAddress, Int32(samples.count))
+            }
+            return SpeechGateDecision(isSpeech: detected, rms: rms, threshold: 0, usedSilero: true)
+        }
+        
         let threshold: Float
         if let configuration = configuration, configuration.chunkDuration > 1.0 {
             threshold = 0.02
         } else {
             threshold = 0.015
         }
-        return rms > threshold
+        
+        return SpeechGateDecision(isSpeech: rms > threshold, rms: rms, threshold: threshold, usedSilero: false)
     }
     
     @discardableResult
@@ -131,9 +145,10 @@ class WhisperRealtimeProcessor {
             return nil
         }
         
-        let speechDetected = detectSpeech(samples: samples)
+        let gateDecision = detectSpeech(samples: samples)
+        let speechDetected = gateDecision.isSpeech
         if !speechDetected && !allowSilenceDecoding {
-            return Output(results: [], speechDetected: false, didDecode: false)
+            return Output(results: [], speechDetected: false, didDecode: false, rmsLevel: gateDecision.rms, rmsThreshold: gateDecision.threshold, usedSileroVAD: gateDecision.usedSilero)
         }
         
         var collectedResults: [WhisperTranscriptionResult] = []
@@ -212,7 +227,7 @@ class WhisperRealtimeProcessor {
                     reset()
                 }
             }
-            return Output(results: [], speechDetected: speechDetected, didDecode: true)
+            return Output(results: [], speechDetected: speechDetected, didDecode: true, rmsLevel: gateDecision.rms, rmsThreshold: gateDecision.threshold, usedSileroVAD: gateDecision.usedSilero)
         }
         
         let segmentCount = whisper_full_n_segments_from_state(state)
@@ -261,7 +276,7 @@ class WhisperRealtimeProcessor {
             }
         }
         
-        return Output(results: collectedResults, speechDetected: speechDetected, didDecode: true)
+        return Output(results: collectedResults, speechDetected: speechDetected, didDecode: true, rmsLevel: gateDecision.rms, rmsThreshold: gateDecision.threshold, usedSileroVAD: gateDecision.usedSilero)
     }
     
     func reset() {

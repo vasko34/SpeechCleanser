@@ -11,4 +11,7 @@ struct Output {
     let results: [WhisperTranscriptionResult]
     let speechDetected: Bool
     let didDecode: Bool
+    let rmsLevel: Float
+    let rmsThreshold: Float
+    let usedSileroVAD: Bool
 }

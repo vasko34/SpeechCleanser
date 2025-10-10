@@ -48,6 +48,8 @@ final class SpeechDetectionService {
     private var lastLatencyAlertDate: Date?
     private var lastVADDutyAlertDate: Date?
     private var silenceChunkAllowance: Int = 0
+    private var consecutiveSilenceChunks: Int = 0
+    private var forcedDecodeIntervalChunks: Int = 0
     
     private(set) var isListening = false
     private(set) var selectedModelSize: ModelSize
@@ -100,6 +102,14 @@ final class SpeechDetectionService {
         lastLatencyAlertDate = nil
         lastVADDutyAlertDate = nil
         silenceChunkAllowance = 0
+        
+        consecutiveSilenceChunks = 0
+        if configuration.strideDuration > 0 {
+            forcedDecodeIntervalChunks = max(2, Int(round(2.0 / configuration.strideDuration)))
+        } else {
+            forcedDecodeIntervalChunks = 2
+            print("[SpeechDetectionService][ERROR] startInternal: Invalid stride duration detected; defaulting forced decode interval")
+        }
         
         UIDevice.current.isBatteryMonitoringEnabled = true
         metricsStartDate = Date()
@@ -164,6 +174,8 @@ final class SpeechDetectionService {
         metricsBatteryLevel = -1
         lastZapDate = nil
         silenceChunkAllowance = 0
+        consecutiveSilenceChunks = 0
+        forcedDecodeIntervalChunks = 0
     }
     
     private func refreshKeywords() {
@@ -304,12 +316,34 @@ final class SpeechDetectionService {
         if output.speechDetected {
             let holdChunks = max(2, Int(ceil(0.6 / configuration.strideDuration)))
             silenceChunkAllowance = holdChunks
+            consecutiveSilenceChunks = 0
         } else if silenceChunkAllowance > 0 {
             silenceChunkAllowance -= 1
+        } else {
+            consecutiveSilenceChunks += 1
+            if forcedDecodeIntervalChunks > 0 && consecutiveSilenceChunks >= forcedDecodeIntervalChunks {
+                silenceChunkAllowance = 1
+                consecutiveSilenceChunks = 0
+                let rmsString = String(format: "%.4f", output.rmsLevel)
+                let thresholdString: String
+                if output.usedSileroVAD {
+                    thresholdString = "silero"
+                } else {
+                    thresholdString = String(format: "%.4f", output.rmsThreshold)
+                }
+                print("[SpeechDetectionService] processChunk: Forced decode after sustained silence rms=\(rmsString) threshold=\(thresholdString) intervalChunks=\(forcedDecodeIntervalChunks)")
+            }
         }
         
         if !output.didDecode {
-            print("[SpeechDetectionService] processChunk: Skipped decode for silence (allowanceRemaining=\(silenceChunkAllowance))")
+            let rmsString = String(format: "%.4f", output.rmsLevel)
+            let thresholdString: String
+            if output.usedSileroVAD {
+                thresholdString = "silero"
+            } else {
+                thresholdString = String(format: "%.4f", output.rmsThreshold)
+            }
+            print("[SpeechDetectionService] processChunk: Skipped decode for silence (allowanceRemaining=\(silenceChunkAllowance) rms=\(rmsString) threshold=\(thresholdString) consecutiveSilence=\(consecutiveSilenceChunks))")
             return
         }
         
@@ -320,25 +354,48 @@ final class SpeechDetectionService {
     
     private func handleTranscriptions(_ results: [WhisperTranscriptionResult]) {
         guard !results.isEmpty else { return }
+        
+        let thresholdString = String(format: "%.2f", detectionProbabilityThreshold)
+        print("[SpeechDetectionService] handleTranscriptions: Received \(results.count) results threshold=\(thresholdString)")
         let filtered = results.filter { $0.averageProbability >= detectionProbabilityThreshold }
-        guard !filtered.isEmpty else { return }
+        
+        if filtered.isEmpty {
+            for result in results {
+                logTranscription(result, flagged: false)
+            }
+            print("[SpeechDetectionService] handleTranscriptions: All results fell below threshold")
+            return
+        }
         
         var triggeredVariations = Set<UUID>()
-        for result in filtered {
-            let sanitizedText = result.text.replacingOccurrences(of: "\n", with: " ")
-            let probability = String(format: "%.2f", result.averageProbability)
-            let startTime = String(format: "%.2f", result.startTime)
-            let endTime = String(format: "%.2f", result.endTime)
-            print("[SpeechDetectionService] handleTranscriptions: Candidate text=\"\(sanitizedText)\" start=\(startTime)s end=\(endTime)s probability=\(probability)")
+        for result in results {
+            let passesThreshold = result.averageProbability >= detectionProbabilityThreshold
+            logTranscription(result, flagged: passesThreshold)
+            guard passesThreshold else { continue }
             
             let matches = matcher.matches(in: result.text)
-            guard !matches.isEmpty else { continue }
+            if matches.isEmpty {
+                print("[SpeechDetectionService] handleTranscriptions: No keyword matches for text=\"\(result.text.replacingOccurrences(of: "\n", with: " "))\"")
+                continue
+            }
+            
+            let variationList = matches.map { $0.variation.name }.joined(separator: ", ")
+            print("[SpeechDetectionService] handleTranscriptions: Matched variations=\(variationList)")
             
             for match in matches where !triggeredVariations.contains(match.variation.id) {
                 triggeredVariations.insert(match.variation.id)
                 fireActions(for: match, spokenTime: result.endTime)
             }
         }
+    }
+    
+    private func logTranscription(_ result: WhisperTranscriptionResult, flagged: Bool) {
+        let sanitizedText = result.text.replacingOccurrences(of: "\n", with: " ")
+        let probability = String(format: "%.2f", result.averageProbability)
+        let startTime = String(format: "%.2f", result.startTime)
+        let endTime = String(format: "%.2f", result.endTime)
+        let status = flagged ? ">= threshold" : "< threshold"
+        print("[SpeechDetectionService] logTranscription: text=\"\(sanitizedText)\" start=\(startTime)s end=\(endTime)s probability=\(probability) status=\(status)")
     }
     
     private func fireActions(for match: KeywordDetectionMatch, spokenTime: TimeInterval) {

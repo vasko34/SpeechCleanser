@@ -130,6 +130,7 @@ class WhisperRealtimeProcessor {
                         params.detect_language = false
                         params.no_context = false
                         params.single_segment = false
+                        params.speed_up = false
                         params.greedy.best_of = Int32(configuration.bestOf)
                         params.beam_search.beam_size = Int32(configuration.beamSize)
                         params.temperature = temperature

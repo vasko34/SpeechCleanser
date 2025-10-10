@@ -27,7 +27,6 @@
         <string>bluetooth-central</string>
         <string>processing</string>
     </array>
-    </array>
     <key>NSMicrophoneUsageDescription</key>
     <string>The app records audio to detect custom keywords and trigger Pavlok alerts.</string>
     <key>NSUserNotificationUsageDescription</key>

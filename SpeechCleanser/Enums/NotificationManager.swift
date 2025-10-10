@@ -28,12 +28,12 @@ enum NotificationManager {
         }
     }
 
-    static func sendDetectionNotification(for keyword: Keyword, variation: Variation, detectionDate: Date) {
+    static func sendDetectionNotification(for keyword: Keyword, variation: Variation, spokenDate: Date, deliveryDate: Date = Date()) {
         let content = UNMutableNotificationContent()
         content.title = "Keyword Detected"
         
-        let detectionTime = detectionFormatter.string(from: detectionDate)
-        content.body = "\(keyword.name) (variation: \(variation.name)) triggered a zap at \(detectionTime)."
+        let spokenTime = detectionFormatter.string(from: spokenDate)
+        content.body = "Keyword: \(keyword.name), Variation: \(variation) – detected at: \(spokenTime)"
         content.sound = .default
         
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
@@ -41,8 +41,8 @@ enum NotificationManager {
             if let error = error {
                 print("[NotificationManager][ERROR] sendDetectionNotification: Notification scheduling failed with error: \(error.localizedDescription)")
             } else {
-                let notificationTime = detectionFormatter.string(from: Date())
-                print("[NotificationManager] sendDetectionNotification: Send notification for keyword \(keyword.name) variation \(variation.name), detectionTime=\(detectionTime) notificationTime=\(notificationTime)")
+                let sendTime = detectionFormatter.string(from: deliveryDate)
+                print("[NotificationManager] sendDetectionNotification: Scheduled notification for keyword=\(keyword.name) variation=\(variation.name) spokenTime=\(spokenTime) sendTime=\(sendTime)")
             }
         }
     }

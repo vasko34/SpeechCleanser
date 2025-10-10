@@ -10,4 +10,5 @@ import Foundation
 extension Notification.Name {
     static let speechDetectionStateChanged = Notification.Name("SpeechDetectionServiceStateChanged")
     static let keywordStoreDidChange = Notification.Name("KeywordStoreDidChangeNotification")
+    static let whisperModelPreferenceChanged = Notification.Name("WhisperModelPreferenceChanged")
 }

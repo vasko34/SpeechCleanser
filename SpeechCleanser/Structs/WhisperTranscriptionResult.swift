@@ -8,5 +8,10 @@
 import Foundation
 
 struct WhisperTranscriptionResult {
-    
+    let text: String
+    let startTime: TimeInterval
+    let endTime: TimeInterval
+    let averageProbability: Float
+    let isFinal: Bool
+    var duration: TimeInterval { endTime - startTime }
 }

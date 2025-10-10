@@ -46,6 +46,28 @@ class WhisperRealtimeProcessor {
         return rms > threshold
     }
     
+    @discardableResult
+    private func recreateDecodingState() -> Bool {
+        guard let context = context else {
+            print("[WhisperRealtimeProcessor][ERROR] recreateDecodingState: Missing context")
+            return false
+        }
+        
+        if let existingState = state {
+            whisper_free_state(existingState)
+            state = nil
+        }
+        
+        let newState = whisper_init_state(context)
+        guard let newState else {
+            print("[WhisperRealtimeProcessor][ERROR] recreateDecodingState: whisper_init_state returned nil")
+            return false
+        }
+        
+        state = newState
+        return true
+    }
+    
     func prepare(configuration: WhisperConfiguration) -> Bool {
         if let current = self.configuration, current.modelSize == configuration.modelSize, context != nil, state != nil {
             self.configuration = configuration
@@ -119,55 +141,76 @@ class WhisperRealtimeProcessor {
         var succeeded = false
         var decodeAttempted = false
         
-        languageBytes.withUnsafeBufferPointer { languagePointer in
-            contextTokens.withUnsafeBufferPointer { promptPointer in
-                samples.withUnsafeBufferPointer { bufferPointer in
-                    guard let baseAddress = bufferPointer.baseAddress else { return }
-                    
-                    for temperature in configuration.temperatureFallback {
-                        var params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
-                        params.print_realtime = false
-                        params.print_progress = false
-                        params.print_timestamps = false
-                        params.print_special = false
-                        params.translate = configuration.translate
-                        params.language = languagePointer.baseAddress
-                        params.detect_language = false
-                        params.no_context = false
-                        params.single_segment = false
-                        params.greedy.best_of = Int32(configuration.bestOf)
-                        params.beam_search.beam_size = Int32(configuration.beamSize)
-                        params.temperature = temperature
-                        params.temperature_inc = 0
-                        params.entropy_thold = 2.4
-                        params.logprob_thold = -1.0
-                        params.no_speech_thold = 0.3
-                        params.thold_pt = 0.5
-                        params.thold_ptsum = 0.5
-                        params.prompt_tokens = promptPointer.baseAddress
-                        params.prompt_n_tokens = Int32(promptPointer.count)
-                        params.suppress_blank = true
-                        params.suppress_nst = false
-                        params.suppress_numerals = configuration.suppressNumerals
-                        params.n_threads = configuration.threads
-                        params.n_max_text_ctx = Int32(configuration.contextTokenCount)
+        let runDecode: (UnsafePointer<CChar>?) -> Void = { [weak self] suppressRegexPointer in
+            guard let self else { return }
+            
+            self.languageBytes.withUnsafeBufferPointer { languagePointer in
+                guard let languageBase = languagePointer.baseAddress else { return }
+                self.contextTokens.withUnsafeBufferPointer { promptPointer in
+                    samples.withUnsafeBufferPointer { bufferPointer in
+                        guard let baseAddress = bufferPointer.baseAddress else { return }
                         
-                        let status = whisper_full_with_state(context, state, params, baseAddress, Int32(samples.count))
-                        decodeAttempted = true
-                        if status == 0 {
-                            succeeded = true
-                            break
+                        for temperature in configuration.temperatureFallback {
+                            var params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
+                            params.print_realtime = false
+                            params.print_progress = false
+                            params.print_timestamps = false
+                            params.print_special = false
+                            params.translate = configuration.translate
+                            params.language = languageBase
+                            params.detect_language = false
+                            params.no_context = false
+                            params.single_segment = false
+                            params.greedy.best_of = Int32(configuration.bestOf)
+                            params.beam_search.beam_size = Int32(configuration.beamSize)
+                            params.temperature = temperature
+                            params.temperature_inc = 0
+                            params.entropy_thold = 2.4
+                            params.logprob_thold = -1.0
+                            params.no_speech_thold = 0.3
+                            params.thold_pt = 0.5
+                            params.thold_ptsum = 0.5
+                            params.prompt_tokens = promptPointer.baseAddress
+                            params.prompt_n_tokens = Int32(promptPointer.count)
+                            params.suppress_blank = true
+                            params.suppress_nst = false
+                            params.suppress_regex = suppressRegexPointer
+                            params.n_threads = configuration.threads
+                            params.n_max_text_ctx = Int32(configuration.contextTokenCount)
+                            
+                            let status = whisper_full_with_state(context, state, params, baseAddress, Int32(samples.count))
+                            decodeAttempted = true
+                            if status == 0 {
+                                succeeded = true
+                                break
+                            }
+                            
+                            print("[WhisperRealtimeProcessor][ERROR] process: whisper_full_with_state returned status \(status) for temperature \(temperature)")
                         }
-                        
-                        print("[WhisperRealtimeProcessor][ERROR] process: whisper_full_with_state returned status \(status) for temperature \(temperature)")
                     }
                 }
             }
         }
         
+        var numeralSuppressionBytes: [CChar] = []
+        if configuration.suppressNumerals {
+            numeralSuppressionBytes = Array("[0-9]+".utf8CString)
+        }
+        
+        if configuration.suppressNumerals {
+            numeralSuppressionBytes.withUnsafeBufferPointer { pointer in
+                runDecode(pointer.baseAddress)
+            }
+        } else {
+            runDecode(nil)
+        }
+        
         guard succeeded else {
             if decodeAttempted {
-                whisper_reset_state(state)
+                if !recreateDecodingState() {
+                    print("[WhisperRealtimeProcessor][ERROR] process: Failed to recreate decoding state after decode failure")
+                    reset()
+                }
             }
             return Output(results: [], speechDetected: speechDetected, didDecode: true)
         }
@@ -212,7 +255,10 @@ class WhisperRealtimeProcessor {
         }
         
         if decodeAttempted {
-            whisper_reset_state(state)
+            if !recreateDecodingState() {
+                print("[WhisperRealtimeProcessor][ERROR] process: Failed to recreate decoding state after decode success")
+                reset()
+            }
         }
         
         return Output(results: collectedResults, speechDetected: speechDetected, didDecode: true)
